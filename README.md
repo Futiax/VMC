@@ -48,13 +48,13 @@ bundles them. To also bundle a Windows binary, build `mcmm.exe` (on Windows or
 with a mingw toolchain) and drop it at
 `src/main/resources/natives/mcmm-windows-x64.exe` before packaging.
 
-The plugin jar is produced at `target/minecraftvideo-plugin-0.1.0.jar`.
+The plugin jar is produced at `target/minecraftvideo-plugin-0.1.1.jar`.
 
 ## Install
 
 1. Install the [packetevents](https://modrinth.com/plugin/packetevents) plugin
    into `plugins/` (required). For audio, also install Simple Voice Chat.
-2. Copy `target/minecraftvideo-plugin-0.1.0.jar` into `plugins/`.
+2. Copy `target/minecraftvideo-plugin-0.1.1.jar` into `plugins/`.
 3. Start the server. On first start the plugin extracts `mcmm` and the palette
    into `plugins/MinecraftVideo/` and generates `config.yml`. Nothing else to
    place by hand (except `ffmpeg` in `PATH` for audio).
@@ -87,9 +87,13 @@ audio-distance: 48
 
 Permission: `minecraftvideo.use` (default: op).
 
-- `/video play <url-or-path> [w] [h] [fps]` — spawns a virtual screen of
-  `w` x `h` maps a few blocks in front of you, facing you, and starts playback.
-  The source can be a local video file path or a URL (anything mcmm/ffmpeg
+- `/video option <width> <height> [fps]` — sets and **persists** the screen
+  options (saved to `config.yml`), so you configure once and just `/video play`
+  afterwards. With no arguments it prints the current options.
+- `/video play <url-or-path> [w] [h] [fps]` — spawns a virtual screen a few
+  blocks in front of you, facing you, and starts playback. Uses the options set
+  by `/video option`; the optional `[w] [h] [fps]` override them for this one
+  play. The source can be a local video file path or a URL (anything mcmm/ffmpeg
   accepts). One video at a time in this base version.
 - `/video stop` — stops playback and removes the screen.
 - `/video pause` / `/video resume` — freezes/continues the video and its audio.
@@ -180,10 +184,18 @@ EOF on stdout = end of video.
 [02:24:09] [Render thread/INFO]: [System] [CHAT]   Margin: 27,6x headroom (96% idle) — plenty of room
 ```
 
-## Future Roadmap (v2.0)
+## Roadmap
 
-Planned features for the next version:
-- **Stereo & Dolby Atmos**: Use multiple virtual audio sources positioned around the player.
-- **Video Seeking**:
-  - Skip forward/backward by 10 seconds.
-  - Jump to a specific timestamp via command.
+### Already done
+
+- **Stereo audio**: the soundtrack can now be reproduced with a stereo rendering path.
+- **Video seeking**: skip forward/backward by 10 seconds and jump to a specific timestamp.
+- **Core playback loop**: virtual screen rendering, packet-only delivery, pause/resume, status reporting, and audio sync are in place.
+- **Surround / object-based audio**: extend the current stereo path toward wider spatial audio setups.
+
+### Future ideas
+
+- **Playlist support**: queue multiple videos and move to the next item automatically.
+- **In-game seek UI**: add a small command or menu flow for quick seeking without typing timestamps.
+- **Subtitle overlays**: render captions or subtitles on top of the virtual screen.
+- **Per-player controls**: allow personal volume, mute, or playback preferences.

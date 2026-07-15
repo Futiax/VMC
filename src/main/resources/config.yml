@@ -20,6 +20,14 @@ default-fps: 10
 # Chat channel anchored at the screen. If SVC is absent, videos play silently.
 audio-enabled: true
 
+# Audio channel layout:
+#   mono   — one channel at the screen center.
+#   stereo — two channels anchored to the screen's left/right edges, so the
+#            client pans L/R from the viewer's own position (a fixed "cinema"
+#            image). Costs ~2x audio bandwidth. Change in-game with
+#            /video option audio <mono|stereo>.
+audio-mode: "mono"
+
 # Path to the ffmpeg executable used to decode the audio track (must be in PATH
 # or an absolute path). ffmpeg reads local files and URLs alike.
 ffmpeg-path: "ffmpeg"

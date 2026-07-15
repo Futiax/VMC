@@ -42,6 +42,7 @@ public final class PlaybackSession {
     private final String ffmpegPath;
     private final boolean audioEnabled;
     private final int audioDistance;
+    private final int audioChannels; // 1 = mono (center), 2 = stereo (L/R edges)
 
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final Object lock = new Object();
@@ -70,7 +71,8 @@ public final class PlaybackSession {
     public PlaybackSession(MinecraftVideoPlugin plugin, Player initiator,
                            String mcmmPath, String palettePath, String source,
                            int width, int height, int fps,
-                           String ffmpegPath, boolean audioEnabled, int audioDistance) {
+                           String ffmpegPath, boolean audioEnabled, int audioDistance,
+                           int audioChannels) {
         this.plugin = plugin;
         this.initiatorId = initiator.getUniqueId();
         this.initiatorName = initiator.getName();
@@ -84,6 +86,7 @@ public final class PlaybackSession {
         this.ffmpegPath = ffmpegPath;
         this.audioEnabled = audioEnabled;
         this.audioDistance = audioDistance;
+        this.audioChannels = audioChannels;
     }
 
     /**
@@ -382,9 +385,13 @@ public final class PlaybackSession {
         if (world == null) {
             return;
         }
-        double[] c = forScreen.getCenter();
+        // Mono: one channel at the screen center. Stereo: one per screen edge,
+        // so the client pans L/R from the viewer's own position (a fixed image).
+        double[][] anchors = (audioChannels == 2)
+                ? new double[][] { forScreen.getLeftAnchor(), forScreen.getRightAnchor() }
+                : new double[][] { forScreen.getCenter() };
         AudioPlayback playback = AudioPlayback.start(hook.getServerApi(), world,
-                c[0], c[1], c[2], audioDistance, ffmpegPath, source, plugin.getLogger());
+                anchors, audioDistance, ffmpegPath, source, plugin.getLogger());
         if (playback == null) {
             return;
         }

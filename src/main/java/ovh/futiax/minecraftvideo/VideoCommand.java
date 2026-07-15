@@ -11,15 +11,23 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /video play &lt;url-or-path&gt; [w] [h] [fps]
+ * /video option &lt;width&gt; &lt;height&gt; [fps]  — set the persistent screen options
+ * /video option audio &lt;mono|stereo&gt;      — set the persistent audio mode
+ * /video play &lt;url-or-path&gt; [w] [h] [fps] — play with those options (args override)
  * /video stop | pause | resume | status
  */
 public final class VideoCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUBCOMMANDS = List.of("play", "stop", "pause", "resume", "status");
+    private static final List<String> SUBCOMMANDS =
+            List.of("play", "option", "stop", "pause", "resume", "status");
 
     private static final int MAX_DIMENSION = 16; // maps per axis
-    private static final int MAX_FPS = 60;
+
+    // The client applies map-data packets from its network queue once per client
+    // tick (20 TPS), so it can show at most 20 distinct frames/second no matter
+    // how fast we send. Anything above 20 just wastes bandwidth and mcmm CPU.
+    // (Only relevant to raise if the server runs a custom /tick rate.)
+    private static final int MAX_FPS = 20;
 
     private final MinecraftVideoPlugin plugin;
 
@@ -35,6 +43,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "play" -> handlePlay(sender, label, args);
+            case "option", "options" -> handleOption(sender, label, args);
             case "stop" -> handleStop(sender);
             case "pause" -> handlePause(sender);
             case "resume", "unpause" -> handleResume(sender);
@@ -106,10 +115,12 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         String ffmpegPath = plugin.getConfig().getString("ffmpeg-path", "ffmpeg");
         boolean audioEnabled = plugin.getConfig().getBoolean("audio-enabled", true);
         int audioDistance = plugin.getConfig().getInt("audio-distance", 48);
+        int audioChannels = "stereo".equalsIgnoreCase(
+                plugin.getConfig().getString("audio-mode", "mono")) ? 2 : 1;
 
         PlaybackSession session = new PlaybackSession(plugin, player,
                 mcmmPath, palettePath, source, width, height, fps,
-                ffmpegPath, audioEnabled, audioDistance);
+                ffmpegPath, audioEnabled, audioDistance, audioChannels);
         if (!plugin.trySetActiveSession(session)) {
             sender.sendMessage("A video is already playing. Use /" + label + " stop first.");
             return;
@@ -129,6 +140,87 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
         }
         return s;
+    }
+
+    /**
+     * /video option &lt;width&gt; &lt;height&gt; [fps] — set and persist screen options.
+     * /video option audio &lt;mono|stereo&gt; — set and persist the audio mode.
+     */
+    private void handleOption(CommandSender sender, String label, String[] args) {
+        if (args.length >= 2 && args[1].equalsIgnoreCase("audio")) {
+            handleAudioOption(sender, label, args);
+            return;
+        }
+
+        int curW = plugin.getConfig().getInt("default-width", 4);
+        int curH = plugin.getConfig().getInt("default-height", 3);
+        int curFps = plugin.getConfig().getInt("default-fps", 10);
+        String curMode = normalizeMode(plugin.getConfig().getString("audio-mode", "mono"));
+
+        if (args.length < 3) {
+            sender.sendMessage("[MinecraftVideo] Current options: "
+                    + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode);
+            sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
+            sender.sendMessage("      or: /" + label + " option audio <mono|stereo>");
+            return;
+        }
+
+        int width;
+        int height;
+        int fps = curFps;
+        try {
+            width = Integer.parseInt(args[1]);
+            height = Integer.parseInt(args[2]);
+            if (args.length >= 4) {
+                fps = Integer.parseInt(args[3]);
+            }
+        } catch (NumberFormatException e) {
+            sender.sendMessage("<width>, <height> and [fps] must be whole numbers.");
+            return;
+        }
+        if (width < 1 || width > MAX_DIMENSION || height < 1 || height > MAX_DIMENSION) {
+            sender.sendMessage("Screen size must be between 1x1 and "
+                    + MAX_DIMENSION + "x" + MAX_DIMENSION + " maps.");
+            return;
+        }
+        if (fps < 1 || fps > MAX_FPS) {
+            sender.sendMessage("fps must be between 1 and " + MAX_FPS + ".");
+            return;
+        }
+
+        plugin.getConfig().set("default-width", width);
+        plugin.getConfig().set("default-height", height);
+        plugin.getConfig().set("default-fps", fps);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] Options saved: " + width + "x" + height
+                + " maps @ " + fps + " fps — used by /" + label + " play.");
+    }
+
+    /** /video option audio <mono|stereo> — set and persist the audio mode. */
+    private void handleAudioOption(CommandSender sender, String label, String[] args) {
+        String cur = normalizeMode(plugin.getConfig().getString("audio-mode", "mono"));
+        if (args.length < 3) {
+            sender.sendMessage("[MinecraftVideo] Current audio mode: " + cur);
+            sender.sendMessage("Set with: /" + label + " option audio <mono|stereo>");
+            return;
+        }
+        String mode = args[2].toLowerCase(Locale.ROOT);
+        if (!mode.equals("mono") && !mode.equals("stereo")) {
+            sender.sendMessage("Audio mode must be 'mono' or 'stereo'.");
+            return;
+        }
+        plugin.getConfig().set("audio-mode", mode);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] Audio mode saved: " + mode
+                + (mode.equals("stereo")
+                        ? " — L/R anchored to the screen edges."
+                        : " — single channel at the screen center.")
+                + " Applies to the next /" + label + " play.");
+    }
+
+    /** Any non-"stereo" value (incl. bad config) reads back as mono. */
+    private static String normalizeMode(String mode) {
+        return "stereo".equalsIgnoreCase(mode) ? "stereo" : "mono";
     }
 
     private void handleStop(CommandSender sender) {
@@ -181,6 +273,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private void sendUsage(CommandSender sender, String label) {
         sender.sendMessage("Usage:");
+        sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
+        sender.sendMessage("  /" + label + " option audio <mono|stereo>  — set audio mode");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
     }
@@ -193,6 +287,23 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             for (String sub : SUBCOMMANDS) {
                 if (sub.startsWith(prefix)) {
                     matches.add(sub);
+                }
+            }
+            return matches;
+        }
+        // /video option [audio] — suggest the audio keyword (width is numeric).
+        if (args.length == 2 && args[0].equalsIgnoreCase("option")
+                && "audio".startsWith(args[1].toLowerCase(Locale.ROOT))) {
+            return List.of("audio");
+        }
+        // /video option audio <mono|stereo>
+        if (args.length == 3 && args[0].equalsIgnoreCase("option")
+                && args[1].equalsIgnoreCase("audio")) {
+            String prefix = args[2].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("mono", "stereo")) {
+                if (v.startsWith(prefix)) {
+                    matches.add(v);
                 }
             }
             return matches;

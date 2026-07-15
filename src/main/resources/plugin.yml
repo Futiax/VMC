@@ -1,6 +1,6 @@
 name: MinecraftVideo
 main: ovh.futiax.minecraftvideo.MinecraftVideoPlugin
-version: 0.1.0
+version: 0.1.1
 api-version: "1.21"
 description: Plays videos on virtual in-game map screens (packets only).
 author: Futiax
@@ -10,7 +10,7 @@ softdepend: [voicechat]
 commands:
   video:
     description: Play a video on a virtual map screen.
-    usage: /video play <url-or-path> [w] [h] [fps] | /video stop | pause | resume | status
+    usage: /video option <w> <h> [fps] | /video option audio <mono|stereo> | /video play <url-or-path> [w] [h] [fps] | /video stop | pause | resume | status
     permission: minecraftvideo.use
 
 permissions:

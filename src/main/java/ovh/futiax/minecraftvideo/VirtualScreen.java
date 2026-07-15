@@ -69,6 +69,8 @@ public final class VirtualScreen {
     private final Vector3d[] positions; // tile index -> frame block center
     private final float frameYaw;       // spawn packet yaw for the facing
     private final int frameDirectionData; // spawn packet data field = direction id
+    private final int rightUnitX;       // viewer-right unit vector (X), for stereo anchors
+    private final int rightUnitZ;       // viewer-right unit vector (Z), for stereo anchors
 
     private final Set<Player> viewers = ConcurrentHashMap.newKeySet();
     private volatile byte[][] lastFrame;
@@ -133,6 +135,8 @@ public final class VirtualScreen {
             case WEST -> 1;
             default -> 0;
         };
+        this.rightUnitX = rightX;
+        this.rightUnitZ = rightZ;
 
         // Screen plane SCREEN_DISTANCE blocks in front of the player,
         // horizontally centered on the line of sight, bottom row at foot level.
@@ -280,5 +284,23 @@ public final class VirtualScreen {
         }
         int n = positions.length;
         return new double[] { x / n, y / n, z / n };
+    }
+
+    /**
+     * World anchor for the LEFT speaker of a stereo pair: the screen center
+     * shifted to the screen's left edge along the viewer-right axis. Returns
+     * {@code {x, y, z}}.
+     */
+    public double[] getLeftAnchor() {
+        double[] c = getCenter();
+        double half = width / 2.0;
+        return new double[] { c[0] - rightUnitX * half, c[1], c[2] - rightUnitZ * half };
+    }
+
+    /** World anchor for the RIGHT speaker of a stereo pair: the right edge. */
+    public double[] getRightAnchor() {
+        double[] c = getCenter();
+        double half = width / 2.0;
+        return new double[] { c[0] + rightUnitX * half, c[1], c[2] + rightUnitZ * half };
     }
 }
