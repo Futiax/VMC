@@ -1,0 +1,28 @@
+# Path to the native mcmm converter executable.
+# Leave EMPTY to use the binary bundled with the plugin (extracted into this
+# folder on first start). Set a path to override with your own build.
+mcmm-path: ""
+
+# Path to the palette JSON passed to mcmm via --palette. Leave EMPTY to use the
+# bundled VANILLA map-color palette (works on any client, no mod needed). Only
+# override this on a modded (Fabric/NeoForge) server that uses a custom map
+# palette such as Improved Map Colors.
+palette-path: ""
+
+# Default screen size in maps (each map is 128x128 pixels) and default fps,
+# used when /video play is called without explicit [w] [h] [fps] arguments.
+default-width: 4
+default-height: 3
+default-fps: 10
+
+# --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
+# When enabled, the video's audio is streamed into a spatialised Simple Voice
+# Chat channel anchored at the screen. If SVC is absent, videos play silently.
+audio-enabled: true
+
+# Path to the ffmpeg executable used to decode the audio track (must be in PATH
+# or an absolute path). ffmpeg reads local files and URLs alike.
+ffmpeg-path: "ffmpeg"
+
+# Audio falloff distance in blocks (how far the screen's sound carries).
+audio-distance: 48
