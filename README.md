@@ -170,7 +170,8 @@ EOF on stdout = end of video.
   audio thread so the frame supplier never blocks on the network.
 
 
-[INFO]
+### Example Status Output
+
 ```log
 [02:24:09] [Render thread/INFO]: [System] [CHAT]   Source: ...Subbing%5D%20Code%20Lyoko%20-%2000%20%28softsubbed%29.mp4
 [02:24:09] [Render thread/INFO]: [System] [CHAT]   Screen: 4x3 maps @ 10 fps
@@ -179,9 +180,10 @@ EOF on stdout = end of video.
 [02:24:09] [Render thread/INFO]: [System] [CHAT]   Margin: 27,6x headroom (96% idle) — plenty of room
 ```
 
-[IDEA]
-For 2.0 we can implement :
-- Custom display size
-- Stereo/dolby atmos (use multiple source of audio around player)
-- Forward / Backward 10sec in video
-- Go to a time precised in the command in the video
+## Future Roadmap (v2.0)
+
+Planned features for the next version:
+- **Stereo & Dolby Atmos**: Use multiple virtual audio sources positioned around the player.
+- **Video Seeking**:
+  - Skip forward/backward by 10 seconds.
+  - Jump to a specific timestamp via command.
