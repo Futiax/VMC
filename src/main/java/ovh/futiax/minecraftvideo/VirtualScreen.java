@@ -323,4 +323,18 @@ public final class VirtualScreen {
         double[] a = getRightAnchor();
         return new double[] { a[0] + audienceUnitX * depth, a[1], a[2] + audienceUnitZ * depth };
     }
+
+    /**
+     * World anchor for the surround SUBWOOFER: horizontally at the screen
+     * center, vertically at the screen's bottom row — a sub sitting at the
+     * base of the screen, like in a cinema.
+     */
+    public double[] getSubAnchor() {
+        double[] c = getCenter();
+        double minY = Double.MAX_VALUE;
+        for (Vector3d p : positions) {
+            minY = Math.min(minY, p.getY());
+        }
+        return new double[] { c[0], minY, c[2] };
+    }
 }

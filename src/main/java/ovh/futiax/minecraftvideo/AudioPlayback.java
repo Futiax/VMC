@@ -5,6 +5,7 @@ import de.maxhenkel.voicechat.api.ServerLevel;
 import de.maxhenkel.voicechat.api.VoicechatServerApi;
 import de.maxhenkel.voicechat.api.audiochannel.AudioPlayer;
 import de.maxhenkel.voicechat.api.audiochannel.LocationalAudioChannel;
+import de.maxhenkel.voicechat.api.opus.OpusEncoderMode;
 import org.bukkit.World;
 
 import java.util.UUID;
@@ -12,7 +13,6 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Logger;
 
 /**
@@ -52,8 +52,12 @@ public final class AudioPlayback {
     private static final int QUEUE_CAPACITY = 50;
     private static final short[] SILENCE = new short[AudioStream.FRAME_SAMPLES];
 
-    /** LFE fold-in gain into the center speaker: 0.707 (~-3 dB) in Q10. */
-    private static final int LFE_GAIN_Q10 = 724;
+    /**
+     * Subwoofer boost: film mixes expect the LFE channel to be played ~+10 dB
+     * hot (bass management); +6 dB (x2, saturating) is our compromise against
+     * clipping the s16 range.
+     */
+    private static final int LFE_BOOST = 2;
 
     private final AudioStream stream;
     private final AudioPlayer[] players;
@@ -86,7 +90,10 @@ public final class AudioPlayback {
                 }
                 channel.setDistance(distance);
                 final int idx = ch;
-                players[ch] = api.createAudioPlayer(channel, api.createEncoder(),
+                // AUDIO mode, not the default VOIP: VOIP is tuned for speech
+                // (high-pass filtering, SILK voice model) and guts music bass.
+                players[ch] = api.createAudioPlayer(channel,
+                        api.createEncoder(OpusEncoderMode.AUDIO),
                         () -> supplyFrame(idx));
             }
         } catch (RuntimeException e) {
@@ -132,21 +139,11 @@ public final class AudioPlayback {
     }
 
     /**
-     * Blocks until at least one audio frame is buffered (or EOF/stop/timeout).
-     * Called before {@link #begin()} so the SVC timeline starts at audio sample
-     * 0 instead of leading silence while ffmpeg warms up.
-     *
-     * @return true if audio data is available
+     * Whether at least one audio frame is buffered. {@link #begin()} should
+     * only be called once primed, so the SVC timeline starts at the stream's
+     * first sample instead of leading silence while ffmpeg warms up.
      */
-    public boolean awaitPrimed(long timeoutMillis) {
-        long deadline = System.nanoTime() + timeoutMillis * 1_000_000L;
-        while (queue.isEmpty() && !eof && !stopped.get()) {
-            long left = deadline - System.nanoTime();
-            if (left <= 0) {
-                return false;
-            }
-            LockSupport.parkNanos(Math.min(left, 20_000_000L));
-        }
+    public boolean isPrimed() {
         return !queue.isEmpty();
     }
 
@@ -155,6 +152,22 @@ public final class AudioPlayback {
         for (AudioPlayer p : players) {
             p.startPlaying();
         }
+    }
+
+    /**
+     * Drops up to {@code n} buffered frames (non-blocking). Used when
+     * {@link #begin()} happens later than planned: skipping the equivalent
+     * content keeps the audio aligned with the picture instead of starting
+     * behind and staying behind.
+     *
+     * @return how many frames were actually dropped (bounded by the buffer)
+     */
+    public int skipFrames(int n) {
+        int dropped = 0;
+        while (dropped < n && queue.poll() != null) {
+            dropped++;
+        }
+        return dropped;
     }
 
     /** Reader thread: pull PCM frames from ffmpeg into the queue until EOF/stop. */
@@ -180,21 +193,21 @@ public final class AudioPlayback {
 
     /**
      * Maps decoded channels onto speaker channels. Identity for mono/stereo.
-     * For 5.1 (6 decoded: FL FR FC LFE BL BR -> 5 speakers: FL FR FC BL BR)
-     * the LFE is folded into the center at ~-3 dB (SVC channels are full-range
-     * positional sources; there is no subwoofer to route it to).
+     * For 5.1 the order already matches the speakers (FL FR FC LFE BL BR, the
+     * LFE being the in-world subwoofer at the screen base); the LFE is boosted
+     * +6 dB with saturation, mirroring the bass-management gain real gear
+     * applies to that channel.
      */
     private short[][] mapToSpeakers(short[][] decoded) {
-        if (decoded.length == players.length) {
-            return decoded;
+        if (decoded.length == 6) {
+            short[] lfe = new short[AudioStream.FRAME_SAMPLES];
+            for (int i = 0; i < lfe.length; i++) {
+                int v = decoded[3][i] * LFE_BOOST;
+                lfe[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, v));
+            }
+            decoded[3] = lfe;
         }
-        // 6 -> 5 is the only non-identity mapping AudioMode produces.
-        short[] fc = new short[AudioStream.FRAME_SAMPLES];
-        for (int i = 0; i < fc.length; i++) {
-            int v = decoded[2][i] + ((decoded[3][i] * LFE_GAIN_Q10) >> 10);
-            fc[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, v));
-        }
-        return new short[][] { decoded[0], decoded[1], fc, decoded[4], decoded[5] };
+        return decoded;
     }
 
     /**

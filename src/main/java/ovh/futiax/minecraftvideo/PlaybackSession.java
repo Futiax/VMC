@@ -23,17 +23,20 @@ import java.util.concurrent.locks.LockSupport;
  * and starts a new segment at the target offset, REUSING the same virtual
  * screen (no flicker, viewers keep the last frame until the new one arrives).
  *
- * <p><b>A/V sync.</b> The audio path carries extra latency the video path does
- * not: the SVC client buffers ~0.5 s of audio in its jitter buffer, while map
- * packets apply on the next client tick. Two measures compensate:
- * <ul>
- *   <li>the audio ffmpeg is spawned BEFORE mcmm's blocking header read
- *       (pre-warm), so for URL sources both pipelines connect in parallel and
- *       audio sample 0 is already buffered when video frame 0 is ready;</li>
- *   <li>after audio starts, the first video frame is delayed by the
- *       configurable {@code av-sync-delay-ms} so the video timeline shifts back
- *       onto the (jitter-buffered) audio timeline.</li>
- * </ul>
+ * <p><b>A/V sync (freeze-frame model).</b> The audio path carries latency the
+ * video path does not: the SVC client buffers audio in a jitter buffer that
+ * INFLATES when packets arrive while the client is busy (the render spike of a
+ * new screen appearing) and never drains back down, while map packets just
+ * apply on the next client tick. So on the first segment, frame 0 is sent
+ * immediately and FROZEN for {@code audio-start-delay-ms} — the client absorbs
+ * the spawn spike while the picture is static and no audio flows — then video
+ * pacing and the audio start TOGETHER, anchored on the same instant. The audio
+ * only skips {@code av-sync-delay-ms} of content (ffmpeg {@code -ss}) to
+ * compensate the client's steady-state audio buffering; no content is lost to
+ * the warm-up itself. Seek segments reuse an already-spawned screen (no render
+ * spike), so they skip the freeze and begin audio as soon as it is primed.
+ * The audio ffmpeg is spawned BEFORE mcmm's blocking header read (pre-warm),
+ * so for URL sources both pipelines connect in parallel.
  *
  * <p>A daemon thread reads frames and paces them at the fps reported by the
  * stream header, using System.nanoTime deadlines (the next deadline is derived
@@ -47,9 +50,6 @@ import java.util.concurrent.locks.LockSupport;
  * thread via the scheduler.
  */
 public final class PlaybackSession {
-
-    /** How long to wait for the first audio frame before starting without it. */
-    private static final long AUDIO_PRIME_TIMEOUT_MS = 4000;
 
     private final MinecraftVideoPlugin plugin;
     private final UUID initiatorId;
@@ -92,6 +92,13 @@ public final class PlaybackSession {
     private volatile int screenH;
     /** Time offset (millis into the video) where the current segment started. */
     private volatile long segmentOffsetMillis;
+
+    /**
+     * Source audio channel count, ffprobe'd once per session for the surround
+     * upmix decision and reused across seek segments: 0 = not probed yet,
+     * -1 = probe failed (surround falls back to the plain 5.1 bed mapping).
+     */
+    private volatile int sourceAudioChannels;
 
     public PlaybackSession(MinecraftVideoPlugin plugin, Player initiator,
                            String mcmmPath, String palettePath, String source,
@@ -293,6 +300,24 @@ public final class PlaybackSession {
     }
 
     /**
+     * Holds the already-sent first frame on screen for
+     * {@code audio-start-delay-ms} of unpaused time, staying responsive to
+     * stop/seek (checked every ≤50 ms) and to pause (which extends the freeze).
+     */
+    private void freezeFirstFrame() {
+        long remaining = Math.max(0, audioSettings.audioStartDelayMillis()) * 1_000_000L;
+        while (remaining > 0 && !stopped.get() && pendingSeekMillis.get() < 0) {
+            if (paused.get()) {
+                awaitResume(0); // parks until resume; the freeze clock stops
+                continue;
+            }
+            long t = System.nanoTime();
+            LockSupport.parkNanos(Math.min(remaining, 50_000_000L));
+            remaining -= System.nanoTime() - t;
+        }
+    }
+
+    /**
      * Human-readable status lines for /video status, including the position and
      * how much headroom the generation pipeline has over the frame budget.
      */
@@ -415,7 +440,9 @@ public final class PlaybackSession {
 
         // Pre-warm the audio decoder in parallel with mcmm's blocking header
         // read (for URLs both connect concurrently). Owned by us until attached.
-        AudioStream preStream = prewarmAudio(offsetMillis);
+        // The decode starts av-sync-delay-ms past the video offset to cover
+        // the client's audio buffering (sync model in the class javadoc).
+        AudioStream preStream = prewarmAudio(offsetMillis + audioSettings.audioSkipMillis());
         boolean audioAttached = false;
 
         try {
@@ -450,32 +477,46 @@ public final class PlaybackSession {
             }
 
             // Attach the pre-warmed audio to SVC channels anchored on the screen.
+            // It stays silent (not begun) until the frame loop starts pacing,
+            // after the freeze-frame warm-up.
             AudioPlayback ap = null;
             if (preStream != null) {
                 ap = attachAudio(preStream, scr);
                 audioAttached = ap != null; // attachAudio closed preStream on failure
             }
-            if (ap != null) {
-                // Anchor the SVC timeline at audio sample 0 (not leading silence),
-                // then give the client jitter buffer its head start on the video.
-                ap.awaitPrimed(AUDIO_PRIME_TIMEOUT_MS);
-                if (stopped.get()) {
-                    return -1;
-                }
-                ap.begin();
-                if (paused.get()) {
-                    ap.setPaused(true); // paused during segment startup
-                }
-                sleepAvSyncDelay();
-            }
 
             int fps = Math.max(1, newStream.getFps());
             long intervalNanos = 1_000_000_000L / fps;
-            long deadline = System.nanoTime() + intervalNanos;
             this.streamFps = fps;
             this.screenW = newStream.getMapWidth();
             this.screenH = newStream.getMapHeight();
+
+            // Freeze-frame warm-up, first segment only: send frame 0 and hold
+            // it for audio-start-delay-ms, so the client's screen-spawn render
+            // spike passes over a static picture with no audio in flight. Seek
+            // segments reuse the screen (no spawn spike): no freeze.
+            if (first) {
+                long t0 = System.nanoTime();
+                byte[][] frame0 = newStream.nextFrame();
+                if (frame0 != null) {
+                    long t1 = System.nanoTime();
+                    scr.sendFrame(frame0);
+                    totalDecodeNanos += (t1 - t0);
+                    totalSendNanos += (System.nanoTime() - t1);
+                    framesSent++;
+                    freezeFirstFrame();
+                }
+                // frame0 == null: instant EOF or killed; the loop below settles it.
+            }
+
+            // Pacing starts HERE: the video deadlines and the audio begin are
+            // anchored on the same post-freeze instant, so both timelines run
+            // from content 0 of this segment together.
+            pausedAccumNanos = 0; // pauses during the freeze already extended it
             this.playStartNanos = System.nanoTime();
+            long deadline = playStartNanos + intervalNanos;
+            long audioBeginNanos = playStartNanos;
+            boolean audioBegun = false;
 
             while (!stopped.get() && pendingSeekMillis.get() < 0) {
                 if (paused.get()) {
@@ -484,6 +525,27 @@ public final class PlaybackSession {
                         break;
                     }
                     continue; // re-check pendingSeek after waking (seek resumes us)
+                }
+
+                // The audio begins with the pacing (audioBeginNanos is the
+                // post-freeze anchor), gated on ffmpeg having data buffered.
+                // If priming made us late, drop the equivalent buffered audio
+                // so the content stays aligned with the picture (effective
+                // time: pauses shift video and audio alike, they don't count).
+                if (!audioBegun && ap != null && ap.isPrimed()) {
+                    long effNow = System.nanoTime() - pausedAccumNanos;
+                    if (effNow >= audioBeginNanos) {
+                        int lateFrames = (int) Math.min(500,
+                                (effNow - audioBeginNanos) / 20_000_000L);
+                        if (lateFrames > 0) {
+                            ap.skipFrames(lateFrames);
+                        }
+                        ap.begin();
+                        if (paused.get()) {
+                            ap.setPaused(true); // paused in the same instant; stay frozen
+                        }
+                        audioBegun = true;
+                    }
                 }
 
                 long t0 = System.nanoTime();
@@ -554,8 +616,17 @@ public final class PlaybackSession {
             return null;
         }
         try {
+            int srcChannels = -1;
+            if (audioSettings.mode() == AudioMode.SURROUND) {
+                srcChannels = sourceAudioChannels;
+                if (srcChannels == 0) { // first segment: probe once, cache for seeks
+                    srcChannels = AudioStream.probeChannels(plugin.getLogger(),
+                            audioSettings.ffmpegPath(), source);
+                    sourceAudioChannels = srcChannels;
+                }
+            }
             return new AudioStream(plugin.getLogger(), audioSettings.ffmpegPath(), source,
-                    audioSettings.mode().decodeChannels(), offsetMillis);
+                    audioSettings.mode().decodeChannels(), offsetMillis, srcChannels);
         } catch (Exception e) {
             plugin.getLogger().warning("Audio unavailable (ffmpeg failed to start): "
                     + e.getMessage());
@@ -579,11 +650,12 @@ public final class PlaybackSession {
             case MONO -> new double[][] { forScreen.getCenter() };
             case STEREO -> new double[][] {
                     forScreen.getLeftAnchor(), forScreen.getRightAnchor() };
-            // Order must match AudioPlayback.mapToSpeakers: FL FR FC BL BR.
+            // Order must match the decoded 5.1 layout: FL FR FC LFE BL BR.
             case SURROUND -> new double[][] {
                     forScreen.getLeftAnchor(),
                     forScreen.getRightAnchor(),
                     forScreen.getCenter(),
+                    forScreen.getSubAnchor(),
                     forScreen.getRearLeftAnchor(audioSettings.rearDistance()),
                     forScreen.getRearRightAnchor(audioSettings.rearDistance()) };
         };
@@ -602,20 +674,6 @@ public final class PlaybackSession {
             plugin.getLogger().warning("Audio playback unavailable: " + e.getMessage());
             preStream.close();
             return null;
-        }
-    }
-
-    /**
-     * Delays the first video frame of the segment by {@code av-sync-delay-ms}
-     * so the video timeline lines up with the audio the SVC client is holding
-     * in its jitter buffer. Aborts early on stop or seek.
-     */
-    private void sleepAvSyncDelay() {
-        long remaining = audioSettings.avSyncDelayMillis();
-        while (remaining > 0 && !stopped.get() && pendingSeekMillis.get() < 0) {
-            long chunk = Math.min(remaining, 50);
-            LockSupport.parkNanos(chunk * 1_000_000L);
-            remaining -= chunk;
         }
     }
 

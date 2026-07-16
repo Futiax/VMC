@@ -13,6 +13,7 @@ import java.util.Locale;
 /**
  * /video option &lt;width&gt; &lt;height&gt; [fps]     — set the persistent screen options
  * /video option audio &lt;mono|stereo|surround&gt; — set the persistent audio mode
+ * /video option avsync &lt;ms&gt;                — set the persistent A/V sync delay
  * /video play &lt;url-or-path&gt; [w] [h] [fps]  — play with those options (args override)
  * /video seek &lt;+s|-s|[hh:]mm:ss&gt;           — skip or jump to a timestamp
  * /video stop | pause | resume | status
@@ -119,7 +120,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 plugin.getConfig().getString("ffmpeg-path", "ffmpeg"),
                 plugin.getConfig().getInt("audio-distance", 48),
                 AudioMode.fromConfig(plugin.getConfig().getString("audio-mode", "mono")),
-                plugin.getConfig().getInt("av-sync-delay-ms", 500),
+                plugin.getConfig().getInt("av-sync-delay-ms", 200),
+                plugin.getConfig().getInt("audio-start-delay-ms", 1000),
                 plugin.getConfig().getDouble("surround-rear-distance", 10.0));
 
         PlaybackSession session = new PlaybackSession(plugin, player,
@@ -154,18 +156,25 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             handleAudioOption(sender, label, args);
             return;
         }
+        if (args.length >= 2 && args[1].equalsIgnoreCase("avsync")) {
+            handleAvsyncOption(sender, label, args);
+            return;
+        }
 
         int curW = plugin.getConfig().getInt("default-width", 4);
         int curH = plugin.getConfig().getInt("default-height", 3);
         int curFps = plugin.getConfig().getInt("default-fps", 10);
         String curMode = AudioMode.fromConfig(
                 plugin.getConfig().getString("audio-mode", "mono")).configName();
+        int curAvsync = plugin.getConfig().getInt("av-sync-delay-ms", 200);
 
         if (args.length < 3) {
             sender.sendMessage("[MinecraftVideo] Current options: "
-                    + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode);
+                    + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode
+                    + ", avsync " + curAvsync + " ms");
             sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
             sender.sendMessage("      or: /" + label + " option audio <mono|stereo|surround>");
+            sender.sendMessage("      or: /" + label + " option avsync <ms>");
             return;
         }
 
@@ -219,10 +228,41 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         String detail = switch (AudioMode.fromConfig(mode)) {
             case MONO -> " — single channel at the screen center.";
             case STEREO -> " — L/R anchored to the screen edges.";
-            case SURROUND -> " — 5 speakers: front L/C/R at the screen, rears behind the audience.";
+            case SURROUND -> " — 6 speakers: front L/C/R at the screen,"
+                    + " a subwoofer at its base, rears behind the audience.";
         };
         sender.sendMessage("[MinecraftVideo] Audio mode saved: " + mode + detail
                 + " Applies to the next /" + label + " play.");
+    }
+
+    /**
+     * /video option avsync [ms] — show or set/persist the A/V sync delay
+     * (how much audio content is skipped to compensate the SVC client's
+     * buffering; see config.yml).
+     */
+    private void handleAvsyncOption(CommandSender sender, String label, String[] args) {
+        int cur = plugin.getConfig().getInt("av-sync-delay-ms", 200);
+        if (args.length < 3) {
+            sender.sendMessage("[MinecraftVideo] Current A/V sync delay: " + cur + " ms.");
+            sender.sendMessage("Set with: /" + label + " option avsync <ms>"
+                    + " — sound arrives late -> increase, sound early -> decrease.");
+            return;
+        }
+        int ms;
+        try {
+            ms = Integer.parseInt(args[2]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage("<ms> must be a whole number of milliseconds (e.g. 200).");
+            return;
+        }
+        if (ms < 0 || ms > 10_000) {
+            sender.sendMessage("A/V sync delay must be between 0 and 10000 ms.");
+            return;
+        }
+        plugin.getConfig().set("av-sync-delay-ms", ms);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] A/V sync delay saved: " + ms + " ms (was "
+                + cur + "). Applies to the next /" + label + " play.");
     }
 
     /** /video seek <+s|-s|[hh:]mm:ss> — relative skip or absolute jump. */
@@ -329,6 +369,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("Usage:");
         sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
         sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
+        sender.sendMessage("  /" + label + " option avsync <ms>  — tune the A/V sync delay");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
         sender.sendMessage("  /" + label + " seek <+s|-s|[hh:]mm:ss>  — skip / jump to timestamp");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
@@ -346,10 +387,18 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video option [audio] — suggest the audio keyword (width is numeric).
-        if (args.length == 2 && args[0].equalsIgnoreCase("option")
-                && "audio".startsWith(args[1].toLowerCase(Locale.ROOT))) {
-            return List.of("audio");
+        // /video option [audio|avsync] — suggest the keywords (width is numeric).
+        if (args.length == 2 && args[0].equalsIgnoreCase("option")) {
+            String prefix = args[1].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("audio", "avsync")) {
+                if (v.startsWith(prefix)) {
+                    matches.add(v);
+                }
+            }
+            if (!matches.isEmpty()) {
+                return matches;
+            }
         }
         // /video option audio <mono|stereo|surround>
         if (args.length == 3 && args[0].equalsIgnoreCase("option")
@@ -358,6 +407,17 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             List<String> matches = new ArrayList<>();
             for (String v : AudioMode.configNames()) {
                 if (v.startsWith(prefix)) {
+                    matches.add(v);
+                }
+            }
+            return matches;
+        }
+        // /video option avsync <ms> — suggest common values.
+        if (args.length == 3 && args[0].equalsIgnoreCase("option")
+                && args[1].equalsIgnoreCase("avsync")) {
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("0", "100", "200", "300", "500")) {
+                if (v.startsWith(args[2])) {
                     matches.add(v);
                 }
             }

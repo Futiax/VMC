@@ -11,17 +11,20 @@ import java.util.Locale;
  *   <li>{@link #MONO} — 1 decoded channel, 1 speaker at the screen center.</li>
  *   <li>{@link #STEREO} — 2 decoded channels, 2 speakers at the screen's
  *       left/right edges (fixed "cinema" image).</li>
- *   <li>{@link #SURROUND} — 6 decoded channels (ffmpeg {@code -ac 6} = 5.1:
- *       FL FR FC LFE BL BR; ffmpeg up/downmixes any source layout, including
- *       an Atmos bed, to 5.1), mapped onto 5 speakers: front L/R at the screen
- *       edges, center at the screen center (LFE folded in), rears behind the
- *       audience. Stereo sources upmixed by ffmpeg keep the image in FL/FR.</li>
+ *   <li>{@link #SURROUND} — 6 decoded channels (5.1: FL FR FC LFE BL BR),
+ *       mapped onto 6 speakers: front L/R at the screen edges, center at the
+ *       screen center, a SUBWOOFER (the LFE channel, boosted +6 dB — film
+ *       mixes play LFE hot) at the base of the screen, and rears behind the
+ *       audience. A 5.1+ source (including an Atmos bed) maps its bed
+ *       directly; a mono/stereo source gets a REAL upmix (ffmpeg
+ *       {@code surround} filter: center, rears and LFE are synthesized), so
+ *       every speaker plays — see {@link AudioStream}.</li>
  * </ul>
  */
 public enum AudioMode {
     MONO(1, 1),
     STEREO(2, 2),
-    SURROUND(6, 5);
+    SURROUND(6, 6);
 
     /** Channel count requested from ffmpeg ({@code -ac N}). */
     private final int decodeChannels;

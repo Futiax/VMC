@@ -25,10 +25,12 @@ audio-enabled: true
 #   stereo   — two channels anchored to the screen's left/right edges, so the
 #              client pans L/R from the viewer's own position (a fixed "cinema"
 #              image). Costs ~2x audio bandwidth.
-#   surround — 5.1 decode mapped onto 5 speakers: front L/R at the screen
-#              edges, center at the screen center (LFE folded in), rear L/R
-#              behind the audience. ffmpeg up/downmixes any source (stereo,
-#              5.1, an Atmos bed...) to 5.1. Costs ~5x audio bandwidth.
+#   surround — 5.1 decode mapped onto 6 speakers: front L/R at the screen
+#              edges, center at the screen center, a SUBWOOFER (the LFE
+#              channel, +6 dB) at the base of the screen, rear L/R behind the
+#              audience. A 5.1+ source (or Atmos bed) maps directly; a
+#              mono/stereo source gets a REAL upmix (center/rears/LFE are
+#              synthesized), so every speaker plays. Costs ~6x audio bandwidth.
 # Change in-game with /video option audio <mono|stereo|surround>.
 audio-mode: "mono"
 
@@ -36,11 +38,19 @@ audio-mode: "mono"
 # rear speakers sit. Only used with audio-mode: surround.
 surround-rear-distance: 10
 
-# Delay (ms) applied to the FIRST video frame after the audio starts. The SVC
-# client holds ~0.5 s of audio in its jitter buffer while map packets apply on
-# the next client tick, so without this the sound would lag the picture.
-# Increase if audio still lags the video, decrease (or 0) if audio leads it.
-av-sync-delay-ms: 500
+# --- A/V sync ---
+# The first video frame is sent immediately and FROZEN for
+# audio-start-delay-ms: the client absorbs the render spike of the screen
+# appearing while the picture is static, so its audio jitter buffer never
+# inflates. Then video pacing and audio start together; no content is lost to
+# the warm-up.
+#
+# av-sync-delay-ms estimates the client-side audio buffering; that much audio
+# content is SKIPPED so the sound lands on the picture:
+#   sound arrives LATE (after the picture)  -> INCREASE it
+#   sound arrives EARLY (before the picture) -> DECREASE it (or set 0)
+av-sync-delay-ms: 200
+audio-start-delay-ms: 1000
 
 # Path to the ffmpeg executable used to decode the audio track (must be in PATH
 # or an absolute path). ffmpeg reads local files and URLs alike.

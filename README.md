@@ -48,13 +48,14 @@ bundles them. To also bundle a Windows binary, build `mcmm.exe` (on Windows or
 with a mingw toolchain) and drop it at
 `src/main/resources/natives/mcmm-windows-x64.exe` before packaging.
 
-The plugin jar is produced at `target/minecraftvideo-plugin-0.2.0.jar`.
+The plugin jar is produced at `target/minecraftvideo-plugin-<version>.jar`
+(`./build.sh` wraps the whole thing and bumps the version).
 
 ## Install
 
 1. Install the [packetevents](https://modrinth.com/plugin/packetevents) plugin
    into `plugins/` (required). For audio, also install Simple Voice Chat.
-2. Copy `target/minecraftvideo-plugin-0.2.0.jar` into `plugins/`.
+2. Copy `target/minecraftvideo-plugin-<version>.jar` into `plugins/`.
 3. Start the server. On first start the plugin extracts `mcmm` and the palette
    into `plugins/MinecraftVideo/` and generates `config.yml`. Nothing else to
    place by hand (except `ffmpeg` in `PATH` for audio).
@@ -88,10 +89,12 @@ audio-mode: "mono"
 # Blocks behind the screen plane (toward the audience) for the surround rears.
 surround-rear-distance: 10
 
-# Delay (ms) applied to the first video frame after audio starts, compensating
-# the ~0.5 s the SVC client holds in its jitter buffer. Increase if audio lags
-# the video, decrease (or 0) if audio leads it.
-av-sync-delay-ms: 500
+# A/V sync (see the Audio section): the first frame is frozen for
+# audio-start-delay-ms while the client absorbs the screen appearing, then
+# video and audio start together; the audio skips av-sync-delay-ms of content
+# to cover the client's buffering. Sound late -> increase, early -> decrease.
+av-sync-delay-ms: 200
+audio-start-delay-ms: 1000
 ```
 
 ## Use
@@ -103,6 +106,9 @@ Permission: `minecraftvideo.use` (default: op).
   afterwards. With no arguments it prints the current options.
 - `/video option audio <mono|stereo|surround>` — sets and persists the audio
   channel layout (see the Audio section).
+- `/video option avsync <ms>` — sets and persists the A/V sync delay
+  (`av-sync-delay-ms`) without editing the config: sound arrives late →
+  increase, sound early → decrease. Applies to the next `/video play`.
 - `/video play <url-or-path> [w] [h] [fps]` — spawns a virtual screen a few
   blocks in front of you, facing you, and starts playback. Uses the options set
   by `/video option`; the optional `[w] [h] [fps]` override them for this one
@@ -145,23 +151,42 @@ Three channel layouts (`audio-mode` / `/video option audio ...`):
 |------|---------------|----------|
 | `mono` | `-ac 1` | 1 at the screen center |
 | `stereo` | `-ac 2` | L/R at the screen's left/right edges |
-| `surround` | `-ac 6` (5.1) | front L/R at the edges, center at the screen (LFE folded in at −3 dB), rear L/R `surround-rear-distance` blocks behind the audience |
+| `surround` | `-ac 6` (5.1) | front L/R at the edges, center at the screen, a **subwoofer** (LFE +6 dB) at the screen's base, rear L/R `surround-rear-distance` blocks behind the audience |
 
-ffmpeg up/downmixes ANY source layout to the requested one, so a stereo file
-plays fine in surround mode (image stays in the front pair) and a 5.1 or
-Atmos-bedded film feeds all five speakers. True object-based Atmos rendering is
-proprietary; the 5.1 bed is what ffmpeg exposes, and it is what we map.
+Any source layout works in any mode. A 5.1+ film (or an Atmos bed — true
+object-based Atmos rendering is proprietary; the 5.1 bed is what ffmpeg
+exposes) maps its channels directly onto the speakers. A mono/stereo source in
+surround mode gets a **real upmix** (ffmpeg's `surround` filter, chosen after
+an automatic `ffprobe` of the source): the center is extracted from the stereo
+correlation, the rears from the ambience, and the LFE is synthesized by
+low-pass — so all six speakers play even for a plain stereo file. (A naive
+`-ac 6` would leave center, rears and subwoofer digitally silent.)
+
+**Bass**: four measures keep the low end intact. The Opus encoders are created
+in `AUDIO` mode (the default `VOIP` mode is speech-tuned and guts music bass);
+the mono/stereo downmix folds a 5.1/7.1 source's LFE channel in at −3 dB
+(ffmpeg's default downmix silently drops LFE — needs ffmpeg ≥ 6 for the
+`out_chlayout` option); in surround mode the LFE gets its own in-world
+subwoofer at the screen's base, boosted +6 dB like real bass management does;
+and stereo sources played in surround get a synthesized LFE (low-passed
+program material), so the subwoofer is never silent.
 
 All decoded channels ride one queue in lockstep (one master SVC channel drains
 it, the others mirror the same frame), so speakers cannot drift apart.
 
-**A/V sync**: the audio path is inherently more laggy than the video path — the
-SVC client holds ~0.5 s of audio in its jitter buffer, while map packets apply
-on the next client tick. The plugin compensates by (a) pre-warming the audio
-ffmpeg while mcmm probes the source, (b) waiting for the first audio frame
-before starting the SVC timeline, and (c) delaying the first video frame by
-`av-sync-delay-ms` (default 500) so the picture lands on the buffered sound.
-If your setup still drifts, tune that value.
+**A/V sync**: the audio path is inherently more laggy than the video path. The
+SVC client buffers received audio in a jitter buffer, and that buffer inflates
+when packets arrive while the client is busy — exactly what happens when the
+screen first appears (a burst of map/entity uploads) — then never drains back
+down. So the plugin sends the first video frame immediately and **freezes** it
+for `audio-start-delay-ms` (default 1000): the spawn spike passes over a
+static picture with no audio in flight, then video pacing and audio start
+together — no soundtrack content is lost to the warm-up. The audio only skips
+`av-sync-delay-ms` (default 200) of content, covering the client's
+steady-state buffering. Tune it: sound late → increase, sound early →
+decrease. Because SVC channels are recreated on `/video seek`, a seek also
+resets any audio delay the client accumulated mid-play. (Client side, lowering
+Simple Voice Chat's `output_buffer_size` reduces the maximum possible lag.)
 
 ## mcmm `--stream` contract
 
@@ -230,13 +255,21 @@ EOF on stdout = end of video.
 
 - **Core playback loop**: virtual screen rendering, packet-only delivery, pause/resume, status reporting.
 - **Stereo audio**: L/R channels anchored to the screen edges (`/video option audio stereo`).
-- **Surround audio**: 5.1 decode mapped onto 5 world-anchored speakers (`/video option audio surround`). True object-based Atmos is proprietary; its 5.1 bed is used.
+- **Surround audio**: 5.1 decode mapped onto 6 world-anchored speakers, subwoofer included (`/video option audio surround`). True object-based Atmos is proprietary; its 5.1 bed is used.
 - **Video seeking**: `/video seek +10 | -10 | <timestamp>` — relative skips and absolute jumps, keeping the screen up (v0.2.0, needs the bundled mcmm with `--seek`).
-- **A/V sync compensation**: audio pre-warm + configurable `av-sync-delay-ms` against the SVC client jitter buffer.
+- **A/V sync compensation** (v0.3.0): freeze-frame warm-up (`audio-start-delay-ms`) so the SVC client absorbs the screen spawn before any audio flows, then video and audio start together; configurable content skip (`av-sync-delay-ms`) against the client jitter buffer.
+- **Real stereo→5.1 upmix** (v0.3.0): sources with fewer than 6 channels get a true upmix in surround mode (synthesized center/rears/LFE) instead of silent speakers.
+
+### Planned for 0.4.0 (in-game UI batch)
+
+- **Playlist support**: a queue of sources (`/video queue add <src>`, auto-advance
+  at EOF) plus `/video skip` to jump to the next item.
+- **In-game control UI**: clickable controls next to the screen built from
+  text/item displays + Interaction entities (packet-only, like the screen
+  itself): play/pause, skip, seek.
+- **Subtitle track selection**: `/video subs list|<n>|off` while playing, when
+  the source has embedded subtitle tracks.
 
 ### Future ideas
 
-- **Playlist support**: queue multiple videos and move to the next item automatically.
-- **In-game seek UI**: add a small command or menu flow for quick seeking without typing timestamps.
-- **Subtitle overlays**: render captions or subtitles on top of the virtual screen.
 - **Per-player controls**: allow personal volume, mute, or playback preferences.
