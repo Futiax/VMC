@@ -12,35 +12,37 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Logger;
 
 /**
  * Streams a video's audio track into one or more Simple Voice Chat locational
  * channels anchored in the world, so nearby players hear it spatialised.
  *
- * <p>Mono uses a single channel at the screen center. Stereo uses two channels
- * anchored to the screen's left/right edges: a fixed "cinema" image where the
- * client's own head tracking pans the sound as the viewer moves — like real
- * speakers. A locational channel is broadcast to every nearby player, so N
- * channels cover the whole room, not N per viewer.
+ * <p>Speaker layouts (see {@link AudioMode}): mono = 1 channel at the screen
+ * center; stereo = 2 at the screen's left/right edges; surround = 5 (front L/R
+ * at the edges, center at the screen center with the LFE folded in, rear L/R
+ * behind the audience). A fixed "cinema" image: the client's own head tracking
+ * pans the sound as the viewer moves, and a locational channel is broadcast to
+ * every nearby player, so N channels cover the whole room, not N per viewer.
  *
  * <p><b>Channel alignment.</b> Each SVC {@link AudioPlayer} pulls on its own
  * thread every 20 ms, so the per-channel suppliers are NOT phase-locked. If each
- * channel had its own queue, their independent underrun decisions could let L and
- * R diverge by whole frames and never re-sync (a race on a frame arriving into an
- * empty queue: one supplier's poll catches it, the other's just timed out to
- * silence). Instead a single queue holds whole de-interleaved frames; channel 0
- * is the "master" that dequeues the next frame and publishes it via
+ * channel had its own queue, their independent underrun decisions could let the
+ * channels diverge by whole frames and never re-sync (a race on a frame arriving
+ * into an empty queue: one supplier's poll catches it, another's just timed out
+ * to silence). Instead a single queue holds whole speaker-mapped frames; channel
+ * 0 is the "master" that dequeues the next frame and publishes it via
  * {@link #current}, and the other channels mirror that same frame. Every channel
  * therefore emits the same frame index each tick, and underrun/EOF affect them
- * together. The only residual offset is the sub-frame (&lt;20 ms) phase difference
- * between the SVC player threads, which cannot accumulate.
+ * together. The only residual offset is the sub-frame (&lt;20 ms) phase
+ * difference between the SVC player threads, which cannot accumulate.
  *
- * <p>Design: a reader thread pulls de-interleaved frames from {@link AudioStream}
- * (its own ffmpeg process) into the bounded queue; the master supplier drains it.
- * The queue decouples ffmpeg I/O from SVC's audio threads — a supplier never
- * blocks on the network. On underrun it emits silence; at EOF it returns
- * {@code null}, ending playback.
+ * <p>Lifecycle: the caller creates the {@link AudioStream} itself (possibly well
+ * before the screen exists, to pre-warm ffmpeg's network connection and codec
+ * init), then calls {@link #create}, {@link #awaitPrimed} and {@link #begin}.
+ * From {@code create} on, this class owns the stream and closes it in
+ * {@link #stop}. On create failure the caller keeps ownership.
  *
  * <p>Players without Simple Voice Chat installed/connected simply won't hear it.
  */
@@ -50,11 +52,14 @@ public final class AudioPlayback {
     private static final int QUEUE_CAPACITY = 50;
     private static final short[] SILENCE = new short[AudioStream.FRAME_SAMPLES];
 
+    /** LFE fold-in gain into the center speaker: 0.707 (~-3 dB) in Q10. */
+    private static final int LFE_GAIN_Q10 = 724;
+
     private final AudioStream stream;
     private final AudioPlayer[] players;
     private final Logger logger;
 
-    /** Whole de-interleaved frames: {@code short[channels][FRAME_SAMPLES]}. */
+    /** Whole speaker-mapped frames: {@code short[speakers][FRAME_SAMPLES]}. */
     private final BlockingQueue<short[][]> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     /** Frame the master (channel 0) last dequeued; mirrored by the other channels. */
     private volatile short[][] current;
@@ -69,11 +74,11 @@ public final class AudioPlayback {
                           int distance, AudioStream stream, Logger logger) {
         this.stream = stream;
         this.logger = logger;
-        int channels = positions.length;
+        int speakers = positions.length;
 
-        this.players = new AudioPlayer[channels];
+        this.players = new AudioPlayer[speakers];
         try {
-            for (int ch = 0; ch < channels; ch++) {
+            for (int ch = 0; ch < speakers; ch++) {
                 LocationalAudioChannel channel =
                         api.createLocationalAudioChannel(UUID.randomUUID(), level, positions[ch]);
                 if (channel == null) {
@@ -104,50 +109,66 @@ public final class AudioPlayback {
     }
 
     /**
-     * Creates and starts audio playback for a source. {@code anchors} holds one
-     * {@code {x,y,z}} world position per channel (1 = mono, 2 = stereo L/R).
-     * Returns {@code null} if audio could not be started (SVC unavailable, ffmpeg
-     * failed) — video playback should continue anyway.
+     * Builds the SVC channels/players around a pre-created (and ideally already
+     * pre-warmed) {@link AudioStream} and starts buffering audio. {@code anchors}
+     * holds one {@code {x,y,z}} world position per speaker; the decoded channel
+     * count comes from the stream itself. Playback does not start until
+     * {@link #begin()}.
+     *
+     * <p>On success this instance owns the stream. On exception the CALLER still
+     * owns (and must close) the stream.
      */
-    public static AudioPlayback start(VoicechatServerApi api, World world,
-                                      double[][] anchors, int distance,
-                                      String ffmpegPath, String source, Logger logger) {
-        AudioStream stream = null;
-        try {
-            int channels = anchors.length;
-            stream = new AudioStream(logger, ffmpegPath, source, channels);
-            ServerLevel level = api.fromServerLevel(world);
-            Position[] positions = new Position[channels];
-            for (int i = 0; i < channels; i++) {
-                positions[i] = api.createPosition(anchors[i][0], anchors[i][1], anchors[i][2]);
+    public static AudioPlayback create(VoicechatServerApi api, World world,
+                                       double[][] anchors, int distance,
+                                       AudioStream stream, Logger logger) {
+        ServerLevel level = api.fromServerLevel(world);
+        Position[] positions = new Position[anchors.length];
+        for (int i = 0; i < anchors.length; i++) {
+            positions[i] = api.createPosition(anchors[i][0], anchors[i][1], anchors[i][2]);
+        }
+        AudioPlayback playback = new AudioPlayback(api, level, positions, distance, stream, logger);
+        playback.reader.start();
+        return playback;
+    }
+
+    /**
+     * Blocks until at least one audio frame is buffered (or EOF/stop/timeout).
+     * Called before {@link #begin()} so the SVC timeline starts at audio sample
+     * 0 instead of leading silence while ffmpeg warms up.
+     *
+     * @return true if audio data is available
+     */
+    public boolean awaitPrimed(long timeoutMillis) {
+        long deadline = System.nanoTime() + timeoutMillis * 1_000_000L;
+        while (queue.isEmpty() && !eof && !stopped.get()) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0) {
+                return false;
             }
-            AudioPlayback playback = new AudioPlayback(api, level, positions, distance, stream, logger);
-            playback.reader.start();
-            for (AudioPlayer p : playback.players) {
-                p.startPlaying();
-            }
-            return playback;
-        } catch (Exception e) {
-            logger.warning("Audio playback unavailable: " + e.getMessage());
-            if (stream != null) {
-                stream.close();
-            }
-            return null;
+            LockSupport.parkNanos(Math.min(left, 20_000_000L));
+        }
+        return !queue.isEmpty();
+    }
+
+    /** Starts the SVC players; audio is audible from this call on. */
+    public void begin() {
+        for (AudioPlayer p : players) {
+            p.startPlaying();
         }
     }
 
-    /** Reader thread: pull whole PCM frames from ffmpeg into the queue until EOF/stop. */
+    /** Reader thread: pull PCM frames from ffmpeg into the queue until EOF/stop. */
     private void readLoop() {
         try {
             while (!stopped.get()) {
-                short[][] frame = stream.nextFrame();
-                if (frame == null) {
+                short[][] decoded = stream.nextFrame();
+                if (decoded == null) {
                     eof = true;
                     return;
                 }
-                // One put per frame (all channels together); blocks when the queue
-                // is full, backpressuring ffmpeg and keeping ~1 s buffered.
-                queue.put(frame);
+                // One put per frame (all speakers together); blocks when the
+                // queue is full, backpressuring ffmpeg and keeping ~1 s buffered.
+                queue.put(mapToSpeakers(decoded));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -158,10 +179,29 @@ public final class AudioPlayback {
     }
 
     /**
+     * Maps decoded channels onto speaker channels. Identity for mono/stereo.
+     * For 5.1 (6 decoded: FL FR FC LFE BL BR -> 5 speakers: FL FR FC BL BR)
+     * the LFE is folded into the center at ~-3 dB (SVC channels are full-range
+     * positional sources; there is no subwoofer to route it to).
+     */
+    private short[][] mapToSpeakers(short[][] decoded) {
+        if (decoded.length == players.length) {
+            return decoded;
+        }
+        // 6 -> 5 is the only non-identity mapping AudioMode produces.
+        short[] fc = new short[AudioStream.FRAME_SAMPLES];
+        for (int i = 0; i < fc.length; i++) {
+            int v = decoded[2][i] + ((decoded[3][i] * LFE_GAIN_Q10) >> 10);
+            fc[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, v));
+        }
+        return new short[][] { decoded[0], decoded[1], fc, decoded[4], decoded[5] };
+    }
+
+    /**
      * Pauses/resumes audio. While paused every supplier emits silence and the
      * master does NOT drain the queue, so ffmpeg backpressures (via a full queue)
-     * and resume continues from the exact frame where playback stopped, staying in
-     * step with the video (which is throttled the same way).
+     * and resume continues from the exact frame where playback stopped, staying
+     * in step with the video (which is throttled the same way).
      */
     public void setPaused(boolean value) {
         paused = value;

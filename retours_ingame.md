@@ -1,0 +1,2 @@
+J'ai l'impression de n'avoire aucune basse que se soit en stéréo ou en surround ou même en mono.
+Genre les boom ou les shock sont ultra réduit voire inaudible. Il est possible que par défaut simple voice chat est du post traitement il faudrait regarder.

@@ -48,13 +48,13 @@ bundles them. To also bundle a Windows binary, build `mcmm.exe` (on Windows or
 with a mingw toolchain) and drop it at
 `src/main/resources/natives/mcmm-windows-x64.exe` before packaging.
 
-The plugin jar is produced at `target/minecraftvideo-plugin-0.1.1.jar`.
+The plugin jar is produced at `target/minecraftvideo-plugin-0.2.0.jar`.
 
 ## Install
 
 1. Install the [packetevents](https://modrinth.com/plugin/packetevents) plugin
    into `plugins/` (required). For audio, also install Simple Voice Chat.
-2. Copy `target/minecraftvideo-plugin-0.1.1.jar` into `plugins/`.
+2. Copy `target/minecraftvideo-plugin-0.2.0.jar` into `plugins/`.
 3. Start the server. On first start the plugin extracts `mcmm` and the palette
    into `plugins/MinecraftVideo/` and generates `config.yml`. Nothing else to
    place by hand (except `ffmpeg` in `PATH` for audio).
@@ -81,6 +81,17 @@ default-fps: 10
 audio-enabled: true
 ffmpeg-path: "ffmpeg"
 audio-distance: 48
+
+# Audio channel layout: mono | stereo | surround (see the Audio section).
+audio-mode: "mono"
+
+# Blocks behind the screen plane (toward the audience) for the surround rears.
+surround-rear-distance: 10
+
+# Delay (ms) applied to the first video frame after audio starts, compensating
+# the ~0.5 s the SVC client holds in its jitter buffer. Increase if audio lags
+# the video, decrease (or 0) if audio leads it.
+av-sync-delay-ms: 500
 ```
 
 ## Use
@@ -90,11 +101,18 @@ Permission: `minecraftvideo.use` (default: op).
 - `/video option <width> <height> [fps]` — sets and **persists** the screen
   options (saved to `config.yml`), so you configure once and just `/video play`
   afterwards. With no arguments it prints the current options.
+- `/video option audio <mono|stereo|surround>` — sets and persists the audio
+  channel layout (see the Audio section).
 - `/video play <url-or-path> [w] [h] [fps]` — spawns a virtual screen a few
   blocks in front of you, facing you, and starts playback. Uses the options set
   by `/video option`; the optional `[w] [h] [fps]` override them for this one
   play. The source can be a local video file path or a URL (anything mcmm/ffmpeg
   accepts). One video at a time in this base version.
+- `/video seek <+s|-s|[hh:]mm:ss>` — skips forward/backward (`+10`, `-10`, any
+  number of seconds) or jumps to an absolute timestamp (`90`, `1:30`,
+  `1:02:03`). The screen is kept (the last frame stays up while the decoder
+  reconnects at the target position); video and audio restart together at the
+  target. Seeking while paused resumes playback.
 - `/video stop` — stops playback and removes the screen.
 - `/video pause` / `/video resume` — freezes/continues the video and its audio.
   While paused, mcmm and the audio ffmpeg block on their pipe/queue (no decoding
@@ -113,27 +131,49 @@ Minecraft has no raw audio channel in its protocol, so the video's soundtrack
 is streamed through **Simple Voice Chat**'s addon API instead:
 
 - The plugin registers as an SVC addon and, when a video starts, spawns its own
-  `ffmpeg` to decode the source to mono 48 kHz PCM (`ffmpeg -i <src> -vn -ac 1
+  `ffmpeg` to decode the source to 48 kHz PCM (`ffmpeg -i <src> -vn -ac <n>
   -ar 48000 -f s16le -`). ffmpeg reads local files and URLs alike.
-- The PCM is streamed into a **locational** SVC channel anchored at the screen
-  center, so the sound is spatialised (falloff = `audio-distance` blocks).
+- The PCM is streamed into **locational** SVC channels anchored in the world
+  around the screen — a fixed "cinema": the speakers never move, and each
+  client spatialises them from its own position (falloff = `audio-distance`).
 - Only players who have Simple Voice Chat installed and connected hear it.
   Without SVC on the server, videos play silently and everything else works.
 
-This is entirely plugin-side: `mcmm` stays video-only, and audio uses a second
-ffmpeg process. Video and audio are started together and paced independently
-(video by the frame loop, audio by SVC's 20 ms cadence), so they stay in sync
-to within decode-startup jitter.
+Three channel layouts (`audio-mode` / `/video option audio ...`):
+
+| mode | ffmpeg decode | speakers |
+|------|---------------|----------|
+| `mono` | `-ac 1` | 1 at the screen center |
+| `stereo` | `-ac 2` | L/R at the screen's left/right edges |
+| `surround` | `-ac 6` (5.1) | front L/R at the edges, center at the screen (LFE folded in at −3 dB), rear L/R `surround-rear-distance` blocks behind the audience |
+
+ffmpeg up/downmixes ANY source layout to the requested one, so a stereo file
+plays fine in surround mode (image stays in the front pair) and a 5.1 or
+Atmos-bedded film feeds all five speakers. True object-based Atmos rendering is
+proprietary; the 5.1 bed is what ffmpeg exposes, and it is what we map.
+
+All decoded channels ride one queue in lockstep (one master SVC channel drains
+it, the others mirror the same frame), so speakers cannot drift apart.
+
+**A/V sync**: the audio path is inherently more laggy than the video path — the
+SVC client holds ~0.5 s of audio in its jitter buffer, while map packets apply
+on the next client tick. The plugin compensates by (a) pre-warming the audio
+ffmpeg while mcmm probes the source, (b) waiting for the first audio frame
+before starting the SVC timeline, and (c) delaying the first video frame by
+`av-sync-delay-ms` (default 500) so the picture lands on the buffered sound.
+If your setup still drifts, tune that value.
 
 ## mcmm `--stream` contract
 
 The plugin spawns:
 
 ```
-mcmm --stream --palette <palette.json> <video> <map_w> <map_h> <fps>
+mcmm --stream --palette <palette.json> [--seek <seconds>] <video> <map_w> <map_h> <fps>
 ```
 
-stdout is pure binary, big-endian. All logs go to stderr.
+stdout is pure binary, big-endian. All logs go to stderr. The optional
+`--seek` starts decoding at the given offset (mcmm forwards it to its internal
+ffmpeg as a fast input `-ss`); the plugin uses it for `/video seek`.
 
 16-byte header:
 
@@ -188,10 +228,11 @@ EOF on stdout = end of video.
 
 ### Already done
 
-- **Stereo audio**: the soundtrack can now be reproduced with a stereo rendering path.
-- **Video seeking**: skip forward/backward by 10 seconds and jump to a specific timestamp.
-- **Core playback loop**: virtual screen rendering, packet-only delivery, pause/resume, status reporting, and audio sync are in place.
-- **Surround / object-based audio**: extend the current stereo path toward wider spatial audio setups.
+- **Core playback loop**: virtual screen rendering, packet-only delivery, pause/resume, status reporting.
+- **Stereo audio**: L/R channels anchored to the screen edges (`/video option audio stereo`).
+- **Surround audio**: 5.1 decode mapped onto 5 world-anchored speakers (`/video option audio surround`). True object-based Atmos is proprietary; its 5.1 bed is used.
+- **Video seeking**: `/video seek +10 | -10 | <timestamp>` — relative skips and absolute jumps, keeping the screen up (v0.2.0, needs the bundled mcmm with `--seek`).
+- **A/V sync compensation**: audio pre-warm + configurable `av-sync-delay-ms` against the SVC client jitter buffer.
 
 ### Future ideas
 

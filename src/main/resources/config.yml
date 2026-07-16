@@ -21,12 +21,26 @@ default-fps: 10
 audio-enabled: true
 
 # Audio channel layout:
-#   mono   — one channel at the screen center.
-#   stereo — two channels anchored to the screen's left/right edges, so the
-#            client pans L/R from the viewer's own position (a fixed "cinema"
-#            image). Costs ~2x audio bandwidth. Change in-game with
-#            /video option audio <mono|stereo>.
+#   mono     — one channel at the screen center.
+#   stereo   — two channels anchored to the screen's left/right edges, so the
+#              client pans L/R from the viewer's own position (a fixed "cinema"
+#              image). Costs ~2x audio bandwidth.
+#   surround — 5.1 decode mapped onto 5 speakers: front L/R at the screen
+#              edges, center at the screen center (LFE folded in), rear L/R
+#              behind the audience. ffmpeg up/downmixes any source (stereo,
+#              5.1, an Atmos bed...) to 5.1. Costs ~5x audio bandwidth.
+# Change in-game with /video option audio <mono|stereo|surround>.
 audio-mode: "mono"
+
+# How many blocks behind the screen plane (toward the audience) the surround
+# rear speakers sit. Only used with audio-mode: surround.
+surround-rear-distance: 10
+
+# Delay (ms) applied to the FIRST video frame after the audio starts. The SVC
+# client holds ~0.5 s of audio in its jitter buffer while map packets apply on
+# the next client tick, so without this the sound would lag the picture.
+# Increase if audio still lags the video, decrease (or 0) if audio leads it.
+av-sync-delay-ms: 500
 
 # Path to the ffmpeg executable used to decode the audio track (must be in PATH
 # or an absolute path). ffmpeg reads local files and URLs alike.

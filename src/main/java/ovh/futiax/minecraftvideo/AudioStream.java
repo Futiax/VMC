@@ -14,13 +14,15 @@ import java.util.logging.Logger;
  *
  * ffmpeg is spawned as:
  *
- *   ffmpeg -v error -i &lt;source&gt; -vn -ac &lt;channels&gt; -ar 48000 -f s16le -
+ *   ffmpeg -v error [-ss &lt;offset&gt;] -i &lt;source&gt; -vn -ac &lt;channels&gt; -ar 48000 -f s16le -
  *
  * i.e. {@code channels}-channel, 48 kHz, signed 16-bit little-endian PCM on
  * stdout — exactly the format Simple Voice Chat expects, in
- * {@value #FRAME_SAMPLES}-sample frames per channel (20 ms). With 2 channels
- * ffmpeg emits interleaved L,R,L,R,... which {@link #nextFrame()} splits back
- * into one {@code short[]} per channel. ffmpeg reads local files and URLs alike.
+ * {@value #FRAME_SAMPLES}-sample frames per channel (20 ms). With N &gt; 1
+ * channels ffmpeg emits interleaved samples which {@link #nextFrame()} splits
+ * back into one {@code short[]} per channel. ffmpeg reads local files and URLs
+ * alike. The optional {@code -ss} (before {@code -i} = fast input seek) starts
+ * decoding at a given offset, used by {@code /video seek}.
  *
  * The source is passed as a ProcessBuilder argument (argv, no shell), so there
  * is no shell-injection surface here.
@@ -35,19 +37,30 @@ public final class AudioStream implements Closeable {
     private final Process process;
     private final InputStream stdout;
 
-    public AudioStream(Logger logger, String ffmpegPath, String source, int channels)
-            throws IOException {
+    public AudioStream(Logger logger, String ffmpegPath, String source, int channels,
+                       long startOffsetMillis) throws IOException {
         this.channels = channels;
         this.frameBytes = channels * FRAME_SAMPLES * 2;
-        ProcessBuilder builder = new ProcessBuilder(
-                ffmpegPath, "-v", "error",
-                "-i", source,
-                "-vn",                          // no video
-                "-ac", Integer.toString(channels), // 1 = mono, 2 = stereo
-                "-ar", "48000",                 // 48 kHz
-                "-f", "s16le",                  // signed 16-bit little-endian PCM
-                "-");                           // stdout
-        this.process = builder.start();
+        java.util.List<String> cmd = new java.util.ArrayList<>();
+        cmd.add(ffmpegPath);
+        cmd.add("-v");
+        cmd.add("error");
+        if (startOffsetMillis > 0) {
+            cmd.add("-ss"); // before -i: fast input seek
+            // Locale.ROOT: a French default locale would format "12,5" and break ffmpeg.
+            cmd.add(String.format(java.util.Locale.ROOT, "%.3f", startOffsetMillis / 1000.0));
+        }
+        cmd.add("-i");
+        cmd.add(source);
+        cmd.add("-vn");                            // no video
+        cmd.add("-ac");
+        cmd.add(Integer.toString(channels));       // 1 = mono, 2 = stereo, 6 = 5.1
+        cmd.add("-ar");
+        cmd.add("48000");                          // 48 kHz
+        cmd.add("-f");
+        cmd.add("s16le");                          // signed 16-bit little-endian PCM
+        cmd.add("-");                              // stdout
+        this.process = new ProcessBuilder(cmd).start();
         this.stdout = process.getInputStream();
         drainStderr(logger);
     }

@@ -6,7 +6,7 @@
 
     <groupId>ovh.futiax</groupId>
     <artifactId>minecraftvideo-plugin</artifactId>
-    <version>0.1.1</version>
+    <version>0.2.1</version>
     <packaging>jar</packaging>
 
     <name>MinecraftVideo</name>
@@ -63,5 +63,26 @@
         <!-- All dependencies are provided at runtime (Paper, the packetevents
              plugin, the Simple Voice Chat mod), so nothing is shaded: a plain
              jar of our own classes + resources is produced. -->
+
+        <!-- plugin.yml is filtered so its `version:` comes from this pom
+             (single source of truth; ./build.sh bumps it on every build).
+             Everything else is copied verbatim: filtering would corrupt the
+             bundled native mcmm binaries. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>plugin.yml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>plugin.yml</exclude>
+                </excludes>
+            </resource>
+        </resources>
     </build>
 </project>

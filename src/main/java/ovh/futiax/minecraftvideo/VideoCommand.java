@@ -11,15 +11,16 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * /video option &lt;width&gt; &lt;height&gt; [fps]  — set the persistent screen options
- * /video option audio &lt;mono|stereo&gt;      — set the persistent audio mode
- * /video play &lt;url-or-path&gt; [w] [h] [fps] — play with those options (args override)
+ * /video option &lt;width&gt; &lt;height&gt; [fps]     — set the persistent screen options
+ * /video option audio &lt;mono|stereo|surround&gt; — set the persistent audio mode
+ * /video play &lt;url-or-path&gt; [w] [h] [fps]  — play with those options (args override)
+ * /video seek &lt;+s|-s|[hh:]mm:ss&gt;           — skip or jump to a timestamp
  * /video stop | pause | resume | status
  */
 public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
-            List.of("play", "option", "stop", "pause", "resume", "status");
+            List.of("play", "option", "seek", "stop", "pause", "resume", "status");
 
     private static final int MAX_DIMENSION = 16; // maps per axis
 
@@ -44,6 +45,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "play" -> handlePlay(sender, label, args);
             case "option", "options" -> handleOption(sender, label, args);
+            case "seek" -> handleSeek(sender, label, args);
             case "stop" -> handleStop(sender);
             case "pause" -> handlePause(sender);
             case "resume", "unpause" -> handleResume(sender);
@@ -112,15 +114,16 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("The color palette is missing. Set palette-path in the plugin config.");
             return;
         }
-        String ffmpegPath = plugin.getConfig().getString("ffmpeg-path", "ffmpeg");
-        boolean audioEnabled = plugin.getConfig().getBoolean("audio-enabled", true);
-        int audioDistance = plugin.getConfig().getInt("audio-distance", 48);
-        int audioChannels = "stereo".equalsIgnoreCase(
-                plugin.getConfig().getString("audio-mode", "mono")) ? 2 : 1;
+        AudioSettings audioSettings = new AudioSettings(
+                plugin.getConfig().getBoolean("audio-enabled", true),
+                plugin.getConfig().getString("ffmpeg-path", "ffmpeg"),
+                plugin.getConfig().getInt("audio-distance", 48),
+                AudioMode.fromConfig(plugin.getConfig().getString("audio-mode", "mono")),
+                plugin.getConfig().getInt("av-sync-delay-ms", 500),
+                plugin.getConfig().getDouble("surround-rear-distance", 10.0));
 
         PlaybackSession session = new PlaybackSession(plugin, player,
-                mcmmPath, palettePath, source, width, height, fps,
-                ffmpegPath, audioEnabled, audioDistance, audioChannels);
+                mcmmPath, palettePath, source, width, height, fps, audioSettings);
         if (!plugin.trySetActiveSession(session)) {
             sender.sendMessage("A video is already playing. Use /" + label + " stop first.");
             return;
@@ -155,13 +158,14 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         int curW = plugin.getConfig().getInt("default-width", 4);
         int curH = plugin.getConfig().getInt("default-height", 3);
         int curFps = plugin.getConfig().getInt("default-fps", 10);
-        String curMode = normalizeMode(plugin.getConfig().getString("audio-mode", "mono"));
+        String curMode = AudioMode.fromConfig(
+                plugin.getConfig().getString("audio-mode", "mono")).configName();
 
         if (args.length < 3) {
             sender.sendMessage("[MinecraftVideo] Current options: "
                     + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode);
             sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
-            sender.sendMessage("      or: /" + label + " option audio <mono|stereo>");
+            sender.sendMessage("      or: /" + label + " option audio <mono|stereo|surround>");
             return;
         }
 
@@ -196,31 +200,81 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 + " maps @ " + fps + " fps — used by /" + label + " play.");
     }
 
-    /** /video option audio <mono|stereo> — set and persist the audio mode. */
+    /** /video option audio <mono|stereo|surround> — set and persist the audio mode. */
     private void handleAudioOption(CommandSender sender, String label, String[] args) {
-        String cur = normalizeMode(plugin.getConfig().getString("audio-mode", "mono"));
+        String cur = AudioMode.fromConfig(
+                plugin.getConfig().getString("audio-mode", "mono")).configName();
         if (args.length < 3) {
             sender.sendMessage("[MinecraftVideo] Current audio mode: " + cur);
-            sender.sendMessage("Set with: /" + label + " option audio <mono|stereo>");
+            sender.sendMessage("Set with: /" + label + " option audio <mono|stereo|surround>");
             return;
         }
         String mode = args[2].toLowerCase(Locale.ROOT);
-        if (!mode.equals("mono") && !mode.equals("stereo")) {
-            sender.sendMessage("Audio mode must be 'mono' or 'stereo'.");
+        if (!AudioMode.configNames().contains(mode)) {
+            sender.sendMessage("Audio mode must be 'mono', 'stereo' or 'surround'.");
             return;
         }
         plugin.getConfig().set("audio-mode", mode);
         plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] Audio mode saved: " + mode
-                + (mode.equals("stereo")
-                        ? " — L/R anchored to the screen edges."
-                        : " — single channel at the screen center.")
+        String detail = switch (AudioMode.fromConfig(mode)) {
+            case MONO -> " — single channel at the screen center.";
+            case STEREO -> " — L/R anchored to the screen edges.";
+            case SURROUND -> " — 5 speakers: front L/C/R at the screen, rears behind the audience.";
+        };
+        sender.sendMessage("[MinecraftVideo] Audio mode saved: " + mode + detail
                 + " Applies to the next /" + label + " play.");
     }
 
-    /** Any non-"stereo" value (incl. bad config) reads back as mono. */
-    private static String normalizeMode(String mode) {
-        return "stereo".equalsIgnoreCase(mode) ? "stereo" : "mono";
+    /** /video seek <+s|-s|[hh:]mm:ss> — relative skip or absolute jump. */
+    private void handleSeek(CommandSender sender, String label, String[] args) {
+        PlaybackSession session = plugin.getActiveSession();
+        if (session == null) {
+            sender.sendMessage("No video is playing.");
+            return;
+        }
+        if (args.length < 2) {
+            sender.sendMessage("Usage: /" + label + " seek <+seconds|-seconds|[hh:]mm:ss>");
+            sender.sendMessage("  e.g. /" + label + " seek +10   /" + label + " seek -10   /"
+                    + label + " seek 1:23");
+            return;
+        }
+        String arg = args[1];
+        long targetMillis;
+        try {
+            if (arg.startsWith("+") || arg.startsWith("-")) {
+                // Relative skip in seconds (sign included).
+                targetMillis = session.getPositionMillis() + Long.parseLong(arg) * 1000L;
+            } else {
+                targetMillis = parseTimestampMillis(arg);
+            }
+        } catch (NumberFormatException e) {
+            sender.sendMessage("Bad time '" + arg + "'. Use +10, -10, 90, 1:30 or 1:02:03.");
+            return;
+        }
+        targetMillis = Math.max(0, targetMillis);
+        if (session.seekTo(targetMillis)) {
+            sender.sendMessage("[MinecraftVideo] Seeking to "
+                    + PlaybackSession.formatTimestamp(targetMillis) + "...");
+        } else {
+            sender.sendMessage("No video is playing.");
+        }
+    }
+
+    /** Parses "90", "1:30" or "1:02:03" into millis. */
+    private static long parseTimestampMillis(String s) {
+        String[] parts = s.split(":");
+        if (parts.length > 3 || parts.length == 0) {
+            throw new NumberFormatException(s);
+        }
+        long total = 0;
+        for (String part : parts) {
+            int v = Integer.parseInt(part);
+            if (v < 0 || (parts.length > 1 && part.length() > 2)) {
+                throw new NumberFormatException(s);
+            }
+            total = total * 60 + v;
+        }
+        return total * 1000L;
     }
 
     private void handleStop(CommandSender sender) {
@@ -274,8 +328,9 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
     private void sendUsage(CommandSender sender, String label) {
         sender.sendMessage("Usage:");
         sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
-        sender.sendMessage("  /" + label + " option audio <mono|stereo>  — set audio mode");
+        sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
+        sender.sendMessage("  /" + label + " seek <+s|-s|[hh:]mm:ss>  — skip / jump to timestamp");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
     }
 
@@ -296,13 +351,23 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 && "audio".startsWith(args[1].toLowerCase(Locale.ROOT))) {
             return List.of("audio");
         }
-        // /video option audio <mono|stereo>
+        // /video option audio <mono|stereo|surround>
         if (args.length == 3 && args[0].equalsIgnoreCase("option")
                 && args[1].equalsIgnoreCase("audio")) {
             String prefix = args[2].toLowerCase(Locale.ROOT);
             List<String> matches = new ArrayList<>();
-            for (String v : List.of("mono", "stereo")) {
+            for (String v : AudioMode.configNames()) {
                 if (v.startsWith(prefix)) {
+                    matches.add(v);
+                }
+            }
+            return matches;
+        }
+        // /video seek <...> — suggest the common skips.
+        if (args.length == 2 && args[0].equalsIgnoreCase("seek")) {
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("+10", "-10", "0:00")) {
+                if (v.startsWith(args[1])) {
                     matches.add(v);
                 }
             }

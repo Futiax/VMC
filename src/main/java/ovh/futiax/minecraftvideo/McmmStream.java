@@ -11,9 +11,11 @@ import java.util.logging.Logger;
 /**
  * Wraps the native mcmm converter spawned as:
  *
- *   mcmm --stream --palette <palette.json> <video> <map_w> <map_h> <fps>
+ *   mcmm --stream --palette <palette.json> [--seek <seconds>] <video> <map_w> <map_h> <fps>
  *
- * stdout is pure binary, big-endian; all mcmm logs go to stderr.
+ * stdout is pure binary, big-endian; all mcmm logs go to stderr. The optional
+ * {@code --seek} makes mcmm start decoding at that offset (it forwards it to
+ * its internal ffmpeg as a fast input {@code -ss}); used by {@code /video seek}.
  *
  * 16-byte header:
  *   bytes 0-3  magic "MCMM"
@@ -57,13 +59,23 @@ public final class McmmStream implements Closeable {
      * process and unblock the header read even if mcmm never writes anything.
      */
     public McmmStream(Logger logger, String mcmmPath, String palettePath, String source,
-                      int requestedWidth, int requestedHeight, int requestedFps) throws IOException {
-        ProcessBuilder builder = new ProcessBuilder(
-                mcmmPath, "--stream", "--palette", palettePath, source,
-                Integer.toString(requestedWidth),
-                Integer.toString(requestedHeight),
-                Integer.toString(requestedFps));
-        this.process = builder.start();
+                      int requestedWidth, int requestedHeight, int requestedFps,
+                      long seekOffsetMillis) throws IOException {
+        java.util.List<String> cmd = new java.util.ArrayList<>();
+        cmd.add(mcmmPath);
+        cmd.add("--stream");
+        cmd.add("--palette");
+        cmd.add(palettePath);
+        if (seekOffsetMillis > 0) {
+            cmd.add("--seek");
+            // Locale.ROOT: a French default locale would format "12,5" and break atof.
+            cmd.add(String.format(java.util.Locale.ROOT, "%.3f", seekOffsetMillis / 1000.0));
+        }
+        cmd.add(source);
+        cmd.add(Integer.toString(requestedWidth));
+        cmd.add(Integer.toString(requestedHeight));
+        cmd.add(Integer.toString(requestedFps));
+        this.process = new ProcessBuilder(cmd).start();
         this.stdout = process.getInputStream();
 
         drainStderr(logger);

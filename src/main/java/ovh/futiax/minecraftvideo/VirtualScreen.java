@@ -71,6 +71,8 @@ public final class VirtualScreen {
     private final int frameDirectionData; // spawn packet data field = direction id
     private final int rightUnitX;       // viewer-right unit vector (X), for stereo anchors
     private final int rightUnitZ;       // viewer-right unit vector (Z), for stereo anchors
+    private final int audienceUnitX;    // screen->audience unit vector (X), for rear speakers
+    private final int audienceUnitZ;    // screen->audience unit vector (Z), for rear speakers
 
     private final Set<Player> viewers = ConcurrentHashMap.newKeySet();
     private volatile byte[][] lastFrame;
@@ -137,6 +139,9 @@ public final class VirtualScreen {
         };
         this.rightUnitX = rightX;
         this.rightUnitZ = rightZ;
+        // Frames face back toward the player, i.e. toward the audience.
+        this.audienceUnitX = facing.getModX();
+        this.audienceUnitZ = facing.getModZ();
 
         // Screen plane SCREEN_DISTANCE blocks in front of the player,
         // horizontally centered on the line of sight, bottom row at foot level.
@@ -302,5 +307,20 @@ public final class VirtualScreen {
         double[] c = getCenter();
         double half = width / 2.0;
         return new double[] { c[0] + rightUnitX * half, c[1], c[2] + rightUnitZ * half };
+    }
+
+    /**
+     * World anchor for the surround REAR-LEFT speaker: the left-edge anchor
+     * pushed {@code depth} blocks from the screen plane toward the audience.
+     */
+    public double[] getRearLeftAnchor(double depth) {
+        double[] a = getLeftAnchor();
+        return new double[] { a[0] + audienceUnitX * depth, a[1], a[2] + audienceUnitZ * depth };
+    }
+
+    /** World anchor for the surround REAR-RIGHT speaker (see {@link #getRearLeftAnchor}). */
+    public double[] getRearRightAnchor(double depth) {
+        double[] a = getRightAnchor();
+        return new double[] { a[0] + audienceUnitX * depth, a[1], a[2] + audienceUnitZ * depth };
     }
 }

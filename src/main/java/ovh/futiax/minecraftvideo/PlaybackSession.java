@@ -10,17 +10,36 @@ import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * One video playback: owns the {@link McmmStream} (the mcmm subprocess) and
- * the {@link VirtualScreen} it renders to.
+ * One video playback: owns the {@link McmmStream} (the mcmm subprocess), the
+ * {@link VirtualScreen} it renders to and the optional {@link AudioPlayback}.
  *
- * A daemon thread reads frames and paces them at the fps reported by the
- * stream header, using System.nanoTime deadlines (the next deadline is
- * derived from the previous one, so sleep jitter does not accumulate drift).
+ * <p><b>Segments.</b> Playback is a sequence of segments, each one mcmm + one
+ * audio pipeline started at a time offset. The initial play is the segment at
+ * offset 0; every {@code /video seek} kills the current segment's subprocesses
+ * and starts a new segment at the target offset, REUSING the same virtual
+ * screen (no flicker, viewers keep the last frame until the new one arrives).
  *
- * NOTE ON THREADING: map-data and entity packets are intentionally sent from
+ * <p><b>A/V sync.</b> The audio path carries extra latency the video path does
+ * not: the SVC client buffers ~0.5 s of audio in its jitter buffer, while map
+ * packets apply on the next client tick. Two measures compensate:
+ * <ul>
+ *   <li>the audio ffmpeg is spawned BEFORE mcmm's blocking header read
+ *       (pre-warm), so for URL sources both pipelines connect in parallel and
+ *       audio sample 0 is already buffered when video frame 0 is ready;</li>
+ *   <li>after audio starts, the first video frame is delayed by the
+ *       configurable {@code av-sync-delay-ms} so the video timeline shifts back
+ *       onto the (jitter-buffered) audio timeline.</li>
+ * </ul>
+ *
+ * <p>A daemon thread reads frames and paces them at the fps reported by the
+ * stream header, using System.nanoTime deadlines (the next deadline is derived
+ * from the previous one, so sleep jitter does not accumulate drift).
+ *
+ * <p>NOTE ON THREADING: map-data and entity packets are intentionally sent from
  * this async playback thread. packetevents' PlayerManager#sendPacket is
  * thread-safe for sending (it writes straight to the player's netty channel),
  * so no main-thread scheduling is needed for the packet traffic. Only Bukkit
@@ -28,6 +47,9 @@ import java.util.concurrent.locks.LockSupport;
  * thread via the scheduler.
  */
 public final class PlaybackSession {
+
+    /** How long to wait for the first audio frame before starting without it. */
+    private static final long AUDIO_PRIME_TIMEOUT_MS = 4000;
 
     private final MinecraftVideoPlugin plugin;
     private final UUID initiatorId;
@@ -39,16 +61,13 @@ public final class PlaybackSession {
     private final int requestedWidth;
     private final int requestedHeight;
     private final int requestedFps;
-    private final String ffmpegPath;
-    private final boolean audioEnabled;
-    private final int audioDistance;
-    private final int audioChannels; // 1 = mono (center), 2 = stereo (L/R edges)
+    private final AudioSettings audioSettings;
 
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final Object lock = new Object();
-    private McmmStream stream;      // guarded by lock
-    private VirtualScreen screen;   // guarded by lock
-    private AudioPlayback audio;    // guarded by lock
+    private McmmStream stream;      // guarded by lock (current segment)
+    private VirtualScreen screen;   // guarded by lock (whole session)
+    private AudioPlayback audio;    // guarded by lock (current segment)
     private volatile Thread playbackThread;
 
     // Pause state. The playback thread parks on pauseLock while paused; mcmm and
@@ -56,23 +75,27 @@ public final class PlaybackSession {
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private final Object pauseLock = new Object();
 
-    // Generation-speed metrics: written by the playback thread, read (racily,
-    // which is fine for a status readout) by /video status on the main thread.
-    private volatile long playStartNanos;    // 0 until the frame loop starts
-    private volatile long pausedAccumNanos;  // total time spent paused
+    /** Seek request in millis; -1 = none. Consumed once per segment change. */
+    private final AtomicLong pendingSeekMillis = new AtomicLong(-1);
+
+    // Generation-speed metrics for the CURRENT segment: written by the playback
+    // thread, read (racily, which is fine for a status readout) by /video status
+    // on the main thread.
+    private volatile long playStartNanos;    // 0 until the segment's frame loop starts
+    private volatile long pausedAccumNanos;  // total time spent paused (this segment)
     private volatile long pauseStartNanos;   // != 0 while currently paused
-    private volatile long framesSent;
+    private volatile long framesSent;        // frames sent this segment
     private volatile long totalDecodeNanos;  // cumulative time blocked in nextFrame()
     private volatile long totalSendNanos;    // cumulative time in sendFrame()
     private volatile int streamFps;
     private volatile int screenW;
     private volatile int screenH;
+    /** Time offset (millis into the video) where the current segment started. */
+    private volatile long segmentOffsetMillis;
 
     public PlaybackSession(MinecraftVideoPlugin plugin, Player initiator,
                            String mcmmPath, String palettePath, String source,
-                           int width, int height, int fps,
-                           String ffmpegPath, boolean audioEnabled, int audioDistance,
-                           int audioChannels) {
+                           int width, int height, int fps, AudioSettings audioSettings) {
         this.plugin = plugin;
         this.initiatorId = initiator.getUniqueId();
         this.initiatorName = initiator.getName();
@@ -83,10 +106,7 @@ public final class PlaybackSession {
         this.requestedWidth = width;
         this.requestedHeight = height;
         this.requestedFps = fps;
-        this.ffmpegPath = ffmpegPath;
-        this.audioEnabled = audioEnabled;
-        this.audioDistance = audioDistance;
-        this.audioChannels = audioChannels;
+        this.audioSettings = audioSettings;
     }
 
     /**
@@ -211,6 +231,49 @@ public final class PlaybackSession {
         return true;
     }
 
+    /** Current position in the video, in millis (segment offset + frames sent). */
+    public long getPositionMillis() {
+        int fps = streamFps;
+        if (fps <= 0) {
+            return segmentOffsetMillis;
+        }
+        return segmentOffsetMillis + framesSent * 1000L / fps;
+    }
+
+    /**
+     * Requests a jump to an absolute position (clamped at 0). The current
+     * segment's subprocesses are killed; the playback thread starts a new
+     * segment at the target on the same screen. Seeking implies resuming.
+     * Returns false if the session is already stopped.
+     */
+    public boolean seekTo(long targetMillis) {
+        if (stopped.get()) {
+            return false;
+        }
+        pendingSeekMillis.set(Math.max(0, targetMillis));
+        synchronized (lock) {
+            if (stream != null) {
+                stream.close(); // unblocks the playback thread's read
+            }
+            if (audio != null) {
+                audio.stop();
+                audio = null;
+            }
+        }
+        // Seek implies resume: wake the playback thread if it is parked.
+        if (paused.compareAndSet(true, false)) {
+            synchronized (pauseLock) {
+                pauseLock.notifyAll();
+            }
+        }
+        return true;
+    }
+
+    /** Relative seek from the current position (e.g. +10 s / -10 s). */
+    public boolean seekBy(long deltaMillis) {
+        return seekTo(getPositionMillis() + deltaMillis);
+    }
+
     /** Parks the playback thread while paused; returns a fresh deadline on resume. */
     private long awaitResume(long intervalNanos) {
         synchronized (pauseLock) {
@@ -230,8 +293,8 @@ public final class PlaybackSession {
     }
 
     /**
-     * Human-readable status lines for /video status, including how much headroom
-     * the generation pipeline has over the target frame budget.
+     * Human-readable status lines for /video status, including the position and
+     * how much headroom the generation pipeline has over the frame budget.
      */
     public String[] describeStatus() {
         long frames = framesSent;
@@ -265,12 +328,23 @@ public final class PlaybackSession {
 
         return new String[] {
             "Source: " + shortSource() + (paused.get() ? "  [PAUSED]" : ""),
-            "Screen: " + screenW + "x" + screenH + " maps @ " + fps + " fps",
-            String.format("Progress: %d frames, %.1fs, %.1f effective fps", frames, elapsedS, effFps),
+            "Screen: " + screenW + "x" + screenH + " maps @ " + fps + " fps, audio "
+                    + audioSettings.mode().configName(),
+            "Position: " + formatTimestamp(getPositionMillis())
+                    + String.format(" — %d frames this segment, %.1f effective fps", frames, effFps),
             String.format("Generation: %.1f ms/frame (decode %.1f + send %.1f) vs %.1f ms budget",
                     workMs, avgDecodeMs, avgSendMs, budgetMs),
             "Margin: " + margin,
         };
+    }
+
+    /** Formats millis as m:ss or h:mm:ss. */
+    public static String formatTimestamp(long millis) {
+        long totalSeconds = Math.max(0, millis) / 1000;
+        long h = totalSeconds / 3600;
+        long m = (totalSeconds % 3600) / 60;
+        long s = totalSeconds % 60;
+        return h > 0 ? String.format("%d:%02d:%02d", h, m, s) : String.format("%d:%02d", m, s);
     }
 
     private String shortSource() {
@@ -282,77 +356,16 @@ public final class PlaybackSession {
 
     private void run(List<Player> initialViewers) {
         try {
-            // Start the subprocess, then publish it BEFORE the blocking header
-            // read so a concurrent stop() can kill mcmm and unblock us.
-            McmmStream newStream = new McmmStream(plugin.getLogger(),
-                    mcmmPath, palettePath, source,
-                    requestedWidth, requestedHeight, requestedFps);
-            synchronized (lock) {
-                if (stopped.get()) {
-                    newStream.close();
-                    return;
-                }
-                stream = newStream;
-            }
-            newStream.readHeader(); // blocking; stop() -> close() unblocks it
-
-            // Build the screen from the header dimensions (authoritative) and
-            // spawn it under the lock so it cannot interleave with destroy().
-            VirtualScreen newScreen = new VirtualScreen(anchor,
-                    newStream.getMapWidth(), newStream.getMapHeight());
-            synchronized (lock) {
-                if (stopped.get()) {
-                    return; // stop() already closed the stream
-                }
-                screen = newScreen;
-                newScreen.spawn(initialViewers);
-            }
-
-            // Audio is independent of the map packets: its own ffmpeg + SVC
-            // channel, started alongside the first frame.
-            startAudioIfEnabled(newScreen);
-
-            int fps = Math.max(1, newStream.getFps());
-            long intervalNanos = 1_000_000_000L / fps;
-            long deadline = System.nanoTime() + intervalNanos;
-            this.streamFps = fps;
-            this.screenW = newStream.getMapWidth();
-            this.screenH = newStream.getMapHeight();
-            this.playStartNanos = System.nanoTime();
-
+            long offsetMillis = 0;
+            boolean first = true;
             while (!stopped.get()) {
-                if (paused.get()) {
-                    deadline = awaitResume(intervalNanos); // re-anchors the deadline
-                    if (stopped.get()) {
-                        break;
-                    }
+                long next = playSegment(initialViewers, offsetMillis, first);
+                first = false;
+                if (next < 0) {
+                    break; // EOF or stop
                 }
-
-                long t0 = System.nanoTime();
-                byte[][] frame = newStream.nextFrame();
-                if (frame == null) {
-                    break; // EOF: end of video
-                }
-                long t1 = System.nanoTime();
-                newScreen.sendFrame(frame); // VirtualScreen keeps it for late joiners
-                long t2 = System.nanoTime();
-
-                totalDecodeNanos += (t1 - t0);
-                totalSendNanos += (t2 - t1);
-                framesSent++;
-
-                long sleepNanos = deadline - System.nanoTime();
-                if (sleepNanos > 0) {
-                    LockSupport.parkNanos(sleepNanos);
-                }
-                // Anchor the next deadline to the previous one: no drift.
-                deadline += intervalNanos;
-                long now = System.nanoTime();
-                if (deadline < now - intervalNanos) {
-                    deadline = now; // fell far behind (slow decode); resync
-                }
+                offsetMillis = next;
             }
-
             if (!stopped.get()) {
                 messageInitiator("Video finished.");
             }
@@ -370,37 +383,239 @@ public final class PlaybackSession {
     }
 
     /**
-     * Starts spatialised audio for this playback if enabled and Simple Voice
-     * Chat is available. Failure is non-fatal: the video keeps playing silently.
+     * Plays one segment starting at {@code offsetMillis}. Creates the screen on
+     * the first segment, reuses it afterwards. Returns the next segment's offset
+     * if a seek was requested, or -1 when playback is over (EOF or stop).
+     *
+     * @throws IOException on a real failure (not on a seek-triggered close)
      */
-    private void startAudioIfEnabled(VirtualScreen forScreen) {
-        if (!audioEnabled) {
-            return;
+    private long playSegment(List<Player> initialViewers, long offsetMillis, boolean first)
+            throws IOException {
+        // Per-segment metrics reset (status shows the current segment).
+        segmentOffsetMillis = offsetMillis;
+        playStartNanos = 0;
+        pausedAccumNanos = 0;
+        pauseStartNanos = 0;
+        framesSent = 0;
+        totalDecodeNanos = 0;
+        totalSendNanos = 0;
+
+        // Start the subprocess, then publish it BEFORE the blocking header
+        // read so a concurrent stop()/seekTo() can kill mcmm and unblock us.
+        McmmStream newStream = new McmmStream(plugin.getLogger(),
+                mcmmPath, palettePath, source,
+                requestedWidth, requestedHeight, requestedFps, offsetMillis);
+        synchronized (lock) {
+            if (stopped.get()) {
+                newStream.close();
+                return -1;
+            }
+            stream = newStream;
+        }
+
+        // Pre-warm the audio decoder in parallel with mcmm's blocking header
+        // read (for URLs both connect concurrently). Owned by us until attached.
+        AudioStream preStream = prewarmAudio(offsetMillis);
+        boolean audioAttached = false;
+
+        try {
+            newStream.readHeader(); // blocking; stop()/seekTo() -> close() unblocks it
+
+            VirtualScreen scr;
+            if (first) {
+                // Build the screen from the header dimensions (authoritative) and
+                // spawn it under the lock so it cannot interleave with destroy().
+                scr = new VirtualScreen(anchor,
+                        newStream.getMapWidth(), newStream.getMapHeight());
+                synchronized (lock) {
+                    if (stopped.get()) {
+                        return -1; // stop() already closed the stream
+                    }
+                    screen = scr;
+                    scr.spawn(initialViewers);
+                }
+            } else {
+                synchronized (lock) {
+                    scr = screen;
+                }
+                if (scr == null) {
+                    return -1; // stopped concurrently
+                }
+                if (scr.getWidth() != newStream.getMapWidth()
+                        || scr.getHeight() != newStream.getMapHeight()) {
+                    throw new IOException("stream header dimensions changed across a seek ("
+                            + scr.getWidth() + "x" + scr.getHeight() + " -> "
+                            + newStream.getMapWidth() + "x" + newStream.getMapHeight() + ")");
+                }
+            }
+
+            // Attach the pre-warmed audio to SVC channels anchored on the screen.
+            AudioPlayback ap = null;
+            if (preStream != null) {
+                ap = attachAudio(preStream, scr);
+                audioAttached = ap != null; // attachAudio closed preStream on failure
+            }
+            if (ap != null) {
+                // Anchor the SVC timeline at audio sample 0 (not leading silence),
+                // then give the client jitter buffer its head start on the video.
+                ap.awaitPrimed(AUDIO_PRIME_TIMEOUT_MS);
+                if (stopped.get()) {
+                    return -1;
+                }
+                ap.begin();
+                if (paused.get()) {
+                    ap.setPaused(true); // paused during segment startup
+                }
+                sleepAvSyncDelay();
+            }
+
+            int fps = Math.max(1, newStream.getFps());
+            long intervalNanos = 1_000_000_000L / fps;
+            long deadline = System.nanoTime() + intervalNanos;
+            this.streamFps = fps;
+            this.screenW = newStream.getMapWidth();
+            this.screenH = newStream.getMapHeight();
+            this.playStartNanos = System.nanoTime();
+
+            while (!stopped.get() && pendingSeekMillis.get() < 0) {
+                if (paused.get()) {
+                    deadline = awaitResume(intervalNanos); // re-anchors the deadline
+                    if (stopped.get()) {
+                        break;
+                    }
+                    continue; // re-check pendingSeek after waking (seek resumes us)
+                }
+
+                long t0 = System.nanoTime();
+                byte[][] frame = newStream.nextFrame();
+                if (frame == null) {
+                    break; // EOF (real end, or the process was killed by a seek)
+                }
+                long t1 = System.nanoTime();
+                scr.sendFrame(frame); // VirtualScreen keeps it for late joiners
+                long t2 = System.nanoTime();
+
+                totalDecodeNanos += (t1 - t0);
+                totalSendNanos += (t2 - t1);
+                framesSent++;
+
+                long sleepNanos = deadline - System.nanoTime();
+                if (sleepNanos > 0) {
+                    LockSupport.parkNanos(sleepNanos);
+                }
+                // Anchor the next deadline to the previous one: no drift.
+                deadline += intervalNanos;
+                long now = System.nanoTime();
+                if (deadline < now - intervalNanos) {
+                    deadline = now; // fell far behind (slow decode); resync
+                }
+            }
+        } catch (IOException e) {
+            // A seek closes the stream mid-read; that IOException is expected
+            // and means "segment over", not a failure.
+            if (pendingSeekMillis.get() < 0 || stopped.get()) {
+                throw e;
+            }
+        } finally {
+            // Tear down this segment's pipelines; the screen persists.
+            synchronized (lock) {
+                newStream.close();
+                if (stream == newStream) {
+                    stream = null;
+                }
+                if (audio != null) {
+                    audio.stop();
+                    audio = null;
+                }
+            }
+            if (preStream != null && !audioAttached) {
+                preStream.close();
+            }
+        }
+
+        long pending = pendingSeekMillis.getAndSet(-1);
+        return (!stopped.get() && pending >= 0) ? pending : -1;
+    }
+
+    /**
+     * Spawns the audio ffmpeg for this segment if audio is enabled and Simple
+     * Voice Chat is available. Returns {@code null} when audio is off or the
+     * spawn failed (playback continues silently).
+     */
+    private AudioStream prewarmAudio(long offsetMillis) {
+        if (!audioSettings.enabled()) {
+            return null;
         }
         VoicechatHook hook = plugin.getVoicechatHook();
         if (hook == null || !hook.isReady()) {
-            return;
+            return null;
         }
+        if (anchor.getWorld() == null) {
+            return null;
+        }
+        try {
+            return new AudioStream(plugin.getLogger(), audioSettings.ffmpegPath(), source,
+                    audioSettings.mode().decodeChannels(), offsetMillis);
+        } catch (Exception e) {
+            plugin.getLogger().warning("Audio unavailable (ffmpeg failed to start): "
+                    + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Builds the SVC channels for the pre-warmed stream, anchored around the
+     * screen according to the audio mode. On failure the stream is closed here
+     * and {@code null} is returned (video continues silently).
+     */
+    private AudioPlayback attachAudio(AudioStream preStream, VirtualScreen forScreen) {
+        VoicechatHook hook = plugin.getVoicechatHook();
         World world = anchor.getWorld();
-        if (world == null) {
-            return;
+        if (hook == null || !hook.isReady() || world == null) {
+            preStream.close();
+            return null;
         }
-        // Mono: one channel at the screen center. Stereo: one per screen edge,
-        // so the client pans L/R from the viewer's own position (a fixed image).
-        double[][] anchors = (audioChannels == 2)
-                ? new double[][] { forScreen.getLeftAnchor(), forScreen.getRightAnchor() }
-                : new double[][] { forScreen.getCenter() };
-        AudioPlayback playback = AudioPlayback.start(hook.getServerApi(), world,
-                anchors, audioDistance, ffmpegPath, source, plugin.getLogger());
-        if (playback == null) {
-            return;
-        }
-        synchronized (lock) {
-            if (stopped.get()) {
-                playback.stop(); // lost the race with stop(); don't leak ffmpeg
-                return;
+        double[][] anchors = switch (audioSettings.mode()) {
+            case MONO -> new double[][] { forScreen.getCenter() };
+            case STEREO -> new double[][] {
+                    forScreen.getLeftAnchor(), forScreen.getRightAnchor() };
+            // Order must match AudioPlayback.mapToSpeakers: FL FR FC BL BR.
+            case SURROUND -> new double[][] {
+                    forScreen.getLeftAnchor(),
+                    forScreen.getRightAnchor(),
+                    forScreen.getCenter(),
+                    forScreen.getRearLeftAnchor(audioSettings.rearDistance()),
+                    forScreen.getRearRightAnchor(audioSettings.rearDistance()) };
+        };
+        try {
+            AudioPlayback playback = AudioPlayback.create(hook.getServerApi(), world,
+                    anchors, audioSettings.distance(), preStream, plugin.getLogger());
+            synchronized (lock) {
+                if (stopped.get()) {
+                    playback.stop(); // lost the race with stop(); don't leak ffmpeg
+                    return null;
+                }
+                audio = playback;
             }
-            audio = playback;
+            return playback;
+        } catch (Exception e) {
+            plugin.getLogger().warning("Audio playback unavailable: " + e.getMessage());
+            preStream.close();
+            return null;
+        }
+    }
+
+    /**
+     * Delays the first video frame of the segment by {@code av-sync-delay-ms}
+     * so the video timeline lines up with the audio the SVC client is holding
+     * in its jitter buffer. Aborts early on stop or seek.
+     */
+    private void sleepAvSyncDelay() {
+        long remaining = audioSettings.avSyncDelayMillis();
+        while (remaining > 0 && !stopped.get() && pendingSeekMillis.get() < 0) {
+            long chunk = Math.min(remaining, 50);
+            LockSupport.parkNanos(chunk * 1_000_000L);
+            remaining -= chunk;
         }
     }
 
