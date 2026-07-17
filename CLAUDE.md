@@ -18,7 +18,7 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
   and client logs in `test.log` (both untracked, at repo root).
 - Test sources: archive.org 5.1 test files (`Splash.mp4`, `surroundTest.mp4`).
 - Build with `./build.sh` (auto-bumps PATCH; `minor|major|set X.Y.Z|keep`).
-  Current version 0.4.5. `plugin.yml` gets `${project.version}` via Maven
+  Current version 0.4.8. `plugin.yml` gets `${project.version}` via Maven
   filtering (ONLY plugin.yml is filtered — filtering other resources would
   corrupt the bundled native binary).
 
@@ -72,8 +72,11 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
   first segment and REUSED across seeks (header dims must match).
 - Commands: `play <src> [w] [h] [fps]`, `option <w> <h> [fps]`,
   `option audio <mono|stereo|surround>`, `option avsync <ms>`,
-  `seek <+s|-s|[hh:]mm:ss>`, `stop|pause|resume|status`. Options persist in
-  config.yml (donc `option avsync` règle le décalage sans toucher au fichier).
+  `option sub <size|height|depth> <val>`, `seek <+s|-s|[hh:]mm:ss>`,
+  `stop|pause|resume|status`. Options persist in config.yml. `option sub` règle
+  la géométrie de l'overlay sous-titres (`subtitle-size/-height/-depth`, lues
+  au build de l'écran → prochain play ; `SubtitleSettings` porté par la session
+  → VirtualScreen → SubtitleOverlay ; depth = blocs DEVANT la surface 0.5).
 
 ## Audio (Simple Voice Chat addon, voicechat-api 2.6.0)
 

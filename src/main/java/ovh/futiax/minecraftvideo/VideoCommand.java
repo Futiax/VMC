@@ -239,6 +239,11 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             handleAvsyncOption(sender, label, args);
             return;
         }
+        if (args.length >= 2 && (args[1].equalsIgnoreCase("sub")
+                || args[1].equalsIgnoreCase("subs") || args[1].equalsIgnoreCase("subtitle"))) {
+            handleSubOption(sender, label, args);
+            return;
+        }
 
         int curW = plugin.getConfig().getInt("default-width", 4);
         int curH = plugin.getConfig().getInt("default-height", 3);
@@ -254,6 +259,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
             sender.sendMessage("      or: /" + label + " option audio <mono|stereo|surround>");
             sender.sendMessage("      or: /" + label + " option avsync <ms>");
+            sender.sendMessage("      or: /" + label + " option sub <size|height|depth> <value>");
             return;
         }
 
@@ -342,6 +348,52 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         plugin.saveConfig();
         sender.sendMessage("[MinecraftVideo] A/V sync delay saved: " + ms + " ms (was "
                 + cur + "). Applies to the next /" + label + " play.");
+    }
+
+    /**
+     * /video option sub &lt;size|height|depth&gt; [value] — show or set/persist the
+     * subtitle overlay geometry (see config.yml). Applies to the next play.
+     */
+    private void handleSubOption(CommandSender sender, String label, String[] args) {
+        if (args.length < 4) {
+            sender.sendMessage("[MinecraftVideo] Subtitles: size "
+                    + plugin.getConfig().getDouble("subtitle-size", 1.0) + ", height "
+                    + plugin.getConfig().getDouble("subtitle-height", 0.45) + ", depth "
+                    + plugin.getConfig().getDouble("subtitle-depth", 0.05));
+            sender.sendMessage("Set with: /" + label + " option sub <size|height|depth> <value>");
+            return;
+        }
+        String key = args[2].toLowerCase(Locale.ROOT);
+        double value;
+        try {
+            value = Double.parseDouble(args[3]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage("<value> must be a number (e.g. 4, 0.1, 0.2).");
+            return;
+        }
+        String configKey;
+        double min;
+        double max;
+        String unit;
+        switch (key) {
+            case "size" -> { configKey = "subtitle-size"; min = 0.1; max = 20.0; unit = "text scale"; }
+            // height/depth are positions: negatives are allowed (below the
+            // bottom edge, or behind the screen plane).
+            case "height" -> { configKey = "subtitle-height"; min = -20.0; max = 20.0; unit = "blocks above the bottom edge"; }
+            case "depth" -> { configKey = "subtitle-depth"; min = -10.0; max = 10.0; unit = "blocks in front of the screen"; }
+            default -> {
+                sender.sendMessage("Subtitle option must be 'size', 'height' or 'depth'.");
+                return;
+            }
+        }
+        if (value < min || value > max) {
+            sender.sendMessage(key + " must be between " + min + " and " + max + ".");
+            return;
+        }
+        plugin.getConfig().set(configKey, value);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] Subtitle " + key + " saved: " + value
+                + " (" + unit + "). Applies to the next /" + label + " play.");
     }
 
     /** /video seek <+s|-s|[hh:]mm:ss> — relative skip or absolute jump. */
@@ -557,6 +609,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
         sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
         sender.sendMessage("  /" + label + " option avsync <ms>  — tune the A/V sync delay");
+        sender.sendMessage("  /" + label + " option sub <size|height|depth> <value>  — subtitle overlay");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
         sender.sendMessage("  /" + label + " queue [add <src>|list|remove <n>|clear]  — playlist");
         sender.sendMessage("  /" + label + " skip  — jump to the next queued video");
@@ -588,11 +641,11 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video option [audio|avsync] — suggest the keywords (width is numeric).
+        // /video option [audio|avsync|sub] — suggest the keywords (width is numeric).
         if (args.length == 2 && args[0].equalsIgnoreCase("option")) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
             List<String> matches = new ArrayList<>();
-            for (String v : List.of("audio", "avsync")) {
+            for (String v : List.of("audio", "avsync", "sub")) {
                 if (v.startsWith(prefix)) {
                     matches.add(v);
                 }
@@ -600,6 +653,18 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             if (!matches.isEmpty()) {
                 return matches;
             }
+        }
+        // /video option sub <size|height|depth>
+        if (args.length == 3 && args[0].equalsIgnoreCase("option")
+                && args[1].equalsIgnoreCase("sub")) {
+            String prefix = args[2].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("size", "height", "depth")) {
+                if (v.startsWith(prefix)) {
+                    matches.add(v);
+                }
+            }
+            return matches;
         }
         // /video option audio <mono|stereo|surround>
         if (args.length == 3 && args[0].equalsIgnoreCase("option")

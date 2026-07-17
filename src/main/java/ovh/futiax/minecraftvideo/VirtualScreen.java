@@ -101,8 +101,10 @@ public final class VirtualScreen {
      * @param width          screen width in map tiles
      * @param height         screen height in map tiles
      * @param withControlBar whether to attach the clickable control bar
+     * @param subtitleSettings geometry (scale/height/depth) of the subtitle overlay
      */
-    public VirtualScreen(Location anchor, int width, int height, boolean withControlBar) {
+    public VirtualScreen(Location anchor, int width, int height, boolean withControlBar,
+                         SubtitleSettings subtitleSettings) {
         this.width = width;
         this.height = height;
 
@@ -192,7 +194,7 @@ public final class VirtualScreen {
         // Always spawned (hidden) so subtitles can be toggled on at any time and
         // late joiners get the display; lifted to clear the bar when present.
         this.subtitleOverlay = new SubtitleOverlay(sub[0], bottomEdgeY, sub[2],
-                audienceUnitX, audienceUnitZ, withControlBar);
+                audienceUnitX, audienceUnitZ, withControlBar, subtitleSettings);
     }
 
     /** Spawns the screen for the given players and registers them as viewers. */

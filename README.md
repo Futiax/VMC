@@ -121,6 +121,10 @@ Permission: `minecraftvideo.use` (default: op).
 - `/video option avsync <ms>` — sets and persists the A/V sync delay
   (`av-sync-delay-ms`) without editing the config: sound arrives late →
   increase, sound early → decrease. Applies to the next `/video play`.
+- `/video option sub <size|height|depth> <value>` — sets and persists the
+  subtitle overlay geometry: `size` = text scale, `height` = blocks above the
+  screen's bottom edge, `depth` = blocks in front of the screen surface.
+  Applies to the next `/video play`.
 - `/video play <url-or-path> [w] [h] [fps]` — spawns a virtual screen a few
   blocks in front of you, facing you, and starts playback. Uses the options set
   by `/video option`; the optional `[w] [h] [fps]` override them for this one

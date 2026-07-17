@@ -21,6 +21,18 @@ default-fps: 10
 # the buttons; everyone sees them. Applies to the next /video play.
 control-bar-enabled: true
 
+# --- Subtitle overlay geometry (also settable in-game: /video option sub ...) ---
+#   size   = text scale (bigger = larger glyphs)
+#   height = blocks above the screen's bottom edge (raises the text; negative
+#            lowers it below the edge; a control bar, if present, adds its own
+#            clearance above this automatically)
+#   depth  = blocks in front of the screen surface (0 = on the plane; a small
+#            value avoids z-fighting; negative places it behind the plane)
+# Applies to the next /video play.
+subtitle-size: 1.0
+subtitle-height: 0.45
+subtitle-depth: 0.05
+
 # --- Remote source cache ---
 # Download an http(s) source to a local file (plugins/MinecraftVideo/cache)
 # ONCE, so mcmm, the audio ffmpeg, ffprobe and the subtitle ffmpeg all read the

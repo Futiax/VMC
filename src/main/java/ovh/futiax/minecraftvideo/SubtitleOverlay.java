@@ -27,9 +27,10 @@ import java.util.UUID;
  * bottom edge so the text sits over the lower third of the picture — and, when
  * a {@link ControlBar} is present, high enough to clear its buttons (a
  * TextDisplay grows UPWARD from its bottom anchor, so a multi-line cue never
- * grows down into the bar). Billboard VERTICAL (upright, pivots to face each
- * viewer) and full-bright, matching the bar. A fixed line width wraps long
- * cues instead of letting them stretch off the screen.
+ * grows down into the bar). Billboard FIXED (coplanar with the screen, oriented
+ * by its facing yaw so it can sit right against the plane) and full-bright,
+ * matching the bar. A fixed line width wraps long cues instead of letting them
+ * stretch off the screen.
  *
  * <p>The text is updated in place with entity-metadata packets: an active cue
  * sends its component to every viewer, and {@link #clear()} sends an empty
@@ -49,24 +50,23 @@ public final class SubtitleOverlay {
     private static final int TEXT_DISPLAY_TEXT_INDEX = 23;    // component
     private static final int TEXT_DISPLAY_LINE_WIDTH_INDEX = 24; // int
 
-    private static final byte BILLBOARD_VERTICAL = 1;
+    private static final byte BILLBOARD_FIXED = 0;
     private static final int FULL_BRIGHT = (15 << 4) | (15 << 20);
 
-    /** Text scale: subtitle-sized, smaller than the control bar's glyph scale. */
-    private static final float TEXT_SCALE = 1.0f;
     /** Wrap width in the TextDisplay's own pixel units (default is 200): lower
      *  wraps sooner, so long cues break onto several lines instead of one wide row. */
     private static final int LINE_WIDTH = 200;
-    /** Offset toward the audience, just proud of the map surface (screen at 0.5). */
-    private static final double FRONT_OFFSET = 0.6;
-    /** Baseline lift above the bottom edge with NO control bar (low in the picture). */
-    private static final double BASELINE_ABOVE_EDGE = 0.45;
+    /** The map surface sits this far in front of the tile's block center; the
+     *  configured depth (subtitle-depth) is measured from here. */
+    private static final double SCREEN_SURFACE = 0.5;
     /** Extra lift when a control bar is present, to clear its ~0.55-tall buttons. */
     private static final double CONTROL_BAR_CLEARANCE = 0.7;
 
     private final int entityId;
     private final UUID entityUuid;
     private final Vector3d position;
+    private final float facingYaw; // FIXED display yaw: text faces the audience
+    private final float scale;     // text scale (subtitle-size)
 
     /** Current cue text (empty = hidden); resent to late joiners on spawn. */
     private volatile Component current = Component.empty();
@@ -78,14 +78,21 @@ public final class SubtitleOverlay {
      * @param outX           screen-to-audience unit vector (X component)
      * @param outZ           screen-to-audience unit vector (Z component)
      * @param hasControlBar  whether a control bar occupies the very bottom strip
+     * @param settings       overlay scale / height / depth (configurable)
      */
     SubtitleOverlay(double centerX, double bottomEdgeY, double centerZ,
-                    int outX, int outZ, boolean hasControlBar) {
-        double lift = BASELINE_ABOVE_EDGE + (hasControlBar ? CONTROL_BAR_CLEARANCE : 0.0);
+                    int outX, int outZ, boolean hasControlBar, SubtitleSettings settings) {
+        this.scale = settings.scale();
+        double frontOffset = SCREEN_SURFACE + settings.depthInFront();
+        double lift = settings.heightAboveEdge() + (hasControlBar ? CONTROL_BAR_CLEARANCE : 0.0);
         this.position = new Vector3d(
-                centerX + outX * FRONT_OFFSET,
+                centerX + outX * frontOffset,
                 bottomEdgeY + lift,
-                centerZ + outZ * FRONT_OFFSET);
+                centerZ + outZ * frontOffset);
+        // FIXED billboarding: the display's own yaw orients the text. Face it
+        // along the screen-to-audience vector (Minecraft yaw: 0=+Z/south,
+        // 90=-X/west, 180=-Z/north, -90=+X/east).
+        this.facingYaw = (float) Math.toDegrees(Math.atan2(-outX, outZ));
         this.entityId = VirtualScreen.nextEntityId();
         this.entityUuid = UUID.randomUUID();
     }
@@ -94,11 +101,11 @@ public final class SubtitleOverlay {
     void spawnFor(Player player) {
         PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                 new WrapperPlayServerSpawnEntity(entityId, Optional.of(entityUuid),
-                        EntityTypes.TEXT_DISPLAY, position, 0f, 0f, 0f, 0, Optional.empty()));
+                        EntityTypes.TEXT_DISPLAY, position, 0f, facingYaw, facingYaw, 0, Optional.empty()));
         List<EntityData<?>> data = new ArrayList<>(5);
         data.add(new EntityData<>(DISPLAY_SCALE_INDEX, EntityDataTypes.VECTOR3F,
-                new Vector3f(TEXT_SCALE, TEXT_SCALE, TEXT_SCALE)));
-        data.add(new EntityData<>(DISPLAY_BILLBOARD_INDEX, EntityDataTypes.BYTE, BILLBOARD_VERTICAL));
+                new Vector3f(scale, scale, scale)));
+        data.add(new EntityData<>(DISPLAY_BILLBOARD_INDEX, EntityDataTypes.BYTE, BILLBOARD_FIXED));
         data.add(new EntityData<>(DISPLAY_BRIGHTNESS_INDEX, EntityDataTypes.INT, FULL_BRIGHT));
         data.add(new EntityData<>(TEXT_DISPLAY_LINE_WIDTH_INDEX, EntityDataTypes.INT, LINE_WIDTH));
         data.add(new EntityData<>(TEXT_DISPLAY_TEXT_INDEX, EntityDataTypes.ADV_COMPONENT, current));

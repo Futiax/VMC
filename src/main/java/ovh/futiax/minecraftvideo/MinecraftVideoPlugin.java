@@ -129,6 +129,14 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return mediaCache;
     }
 
+    /** Subtitle-overlay geometry snapshot from the current config values. */
+    public SubtitleSettings buildSubtitleSettings() {
+        return new SubtitleSettings(
+                (float) getConfig().getDouble("subtitle-size", 1.0),
+                getConfig().getDouble("subtitle-height", 0.45),
+                getConfig().getDouble("subtitle-depth", 0.05));
+    }
+
     /** Audio configuration snapshot from the current config values. */
     public AudioSettings buildAudioSettings() {
         return new AudioSettings(

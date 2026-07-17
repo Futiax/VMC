@@ -77,6 +77,8 @@ public final class PlaybackSession {
     private final AudioSettings audioSettings;
     /** Snapshot of control-bar-enabled, read in the ctor (main thread). */
     private final boolean controlBarEnabled;
+    /** Subtitle-overlay geometry, read in the ctor (main thread). */
+    private final SubtitleSettings subtitleSettings;
 
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final Object lock = new Object();
@@ -165,6 +167,7 @@ public final class PlaybackSession {
         // Sessions are constructed on the main thread (command or playlist
         // advance), so reading the live config here is safe.
         this.controlBarEnabled = plugin.getConfig().getBoolean("control-bar-enabled", true);
+        this.subtitleSettings = plugin.buildSubtitleSettings();
     }
 
     /**
@@ -586,7 +589,7 @@ public final class PlaybackSession {
                 // spawn it under the lock so it cannot interleave with destroy().
                 scr = new VirtualScreen(anchor,
                         newStream.getMapWidth(), newStream.getMapHeight(),
-                        controlBarEnabled);
+                        controlBarEnabled, subtitleSettings);
                 synchronized (lock) {
                     if (stopped.get()) {
                         return -1; // stop() already closed the stream

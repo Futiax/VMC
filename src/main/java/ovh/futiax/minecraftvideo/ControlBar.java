@@ -31,13 +31,13 @@ import java.util.UUID;
  * sits at the anchor player's foot level, so anything under it is buried in
  * flat ground.
  *
- * <p>The displays use billboard VERTICAL (upright glyphs that pivot around
- * their vertical axis to face each viewer) rather than FIXED: it needs no yaw
- * in the spawn packet, cannot end up facing 180° the wrong way, and stays
- * readable from anywhere in the audience area — and unlike full CENTER
- * billboarding the glyphs never pitch into the screen or the ground at steep
- * view angles. The click hitboxes are axis-aligned boxes either way, so
- * nothing depends on the text orientation.
+ * <p>The displays use billboard FIXED, oriented by the screen's facing yaw
+ * (derived from the screen-to-audience vector) so the glyphs sit coplanar with
+ * the picture like a real on-screen overlay, and can be pushed right up against
+ * the plane without a pivot rotating them into it. If a screen ever renders the
+ * glyphs mirrored / back-to-front, flip {@code facingYaw} by 180°. The click
+ * hitboxes are axis-aligned boxes regardless, so nothing depends on the text
+ * orientation.
  *
  * <p>Owned by the VirtualScreen: spawned per viewer right after the screen's
  * frames (including late joiners) and destroyed with it (the screen's
@@ -77,7 +77,7 @@ public final class ControlBar {
     private static final int INTERACTION_RESPONSIVE_INDEX = 10; // boolean
 
     /** Billboard constraint ids: FIXED=0, VERTICAL=1, HORIZONTAL=2, CENTER=3. */
-    private static final byte BILLBOARD_VERTICAL = 1;
+    private static final byte BILLBOARD_FIXED = 0;
     /** Brightness override block 15 / sky 15, matching the glow-frame screen. */
     private static final int FULL_BRIGHT = (15 << 4) | (15 << 20);
 
@@ -89,8 +89,10 @@ public final class ControlBar {
      * picture's bottom strip instead of hanging (underground) below it.
      */
     private static final double BASELINE_ABOVE_EDGE = 0.05;
-    /** Offset toward the audience, just proud of the map surface (at 0.5). */
-    private static final double FRONT_OFFSET = 0.6;
+    /** Offset toward the audience: right against the map surface (at 0.5),
+     *  a hair in front to avoid z-fighting. FIXED billboarding never pivots the
+     *  glyph back into the plane, so it can sit this close. */
+    private static final double FRONT_OFFSET = 0.55;
     /** Text scale: one glyph line (~0.25 blocks at scale 1) becomes ~0.5. */
     private static final float TEXT_SCALE = 2.0f;
     /** Interaction hitbox width and height, roughly covering the glyph. */
@@ -102,6 +104,7 @@ public final class ControlBar {
     private final UUID[] interactionUuids;
     private final Vector3d[] positions; // shared glyph + hitbox anchor (both
                                         // entity types anchor at their bottom)
+    private final float facingYaw;      // FIXED display yaw: glyphs face the audience
 
     /**
      * @param centerX     screen center X
@@ -121,6 +124,11 @@ public final class ControlBar {
         this.textUuids = new UUID[n];
         this.interactionUuids = new UUID[n];
         this.positions = new Vector3d[n];
+
+        // FIXED billboarding: the display's own yaw orients the glyph. Face it
+        // along the screen-to-audience vector (Minecraft yaw: 0=+Z/south,
+        // 90=-X/west, 180=-Z/north, -90=+X/east).
+        this.facingYaw = (float) Math.toDegrees(Math.atan2(-outX, outZ));
 
         double y = bottomEdgeY + BASELINE_ABOVE_EDGE;
         for (int i = 0; i < n; i++) {
@@ -145,13 +153,13 @@ public final class ControlBar {
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerSpawnEntity(textIds[i],
                             Optional.of(textUuids[i]), EntityTypes.TEXT_DISPLAY,
-                            positions[i], 0f, 0f, 0f, 0, Optional.empty()));
+                            positions[i], 0f, facingYaw, facingYaw, 0, Optional.empty()));
             List<EntityData<?>> textData = new ArrayList<>(4);
             textData.add(new EntityData<>(DISPLAY_SCALE_INDEX,
                     EntityDataTypes.VECTOR3F,
                     new Vector3f(TEXT_SCALE, TEXT_SCALE, TEXT_SCALE)));
             textData.add(new EntityData<>(DISPLAY_BILLBOARD_INDEX,
-                    EntityDataTypes.BYTE, BILLBOARD_VERTICAL));
+                    EntityDataTypes.BYTE, BILLBOARD_FIXED));
             textData.add(new EntityData<>(DISPLAY_BRIGHTNESS_INDEX,
                     EntityDataTypes.INT, FULL_BRIGHT));
             textData.add(new EntityData<>(TEXT_DISPLAY_TEXT_INDEX,
