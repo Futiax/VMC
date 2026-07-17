@@ -1,5 +1,8 @@
 package ovh.futiax.minecraftvideo;
 
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.event.PacketListenerCommon;
+import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import de.maxhenkel.voicechat.api.BukkitVoicechatService;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -19,11 +22,17 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     /** Single global playback session for this base version. */
     private volatile PlaybackSession activeSession;
 
+    /** FIFO of queued sources; auto-advances when the active session ends. */
+    private final PlaylistManager playlist = new PlaylistManager(this);
+
     /** Simple Voice Chat hook; null when SVC is not installed. */
     private VoicechatHook voicechatHook;
 
     /** Extracts the bundled mcmm binary + palette on first start. */
     private final NativeInstaller nativeInstaller = new NativeInstaller(this);
+
+    /** Registered control-bar click listener, kept to unregister on disable. */
+    private PacketListenerCommon controlBarListener;
 
     @Override
     public void onEnable() {
@@ -40,6 +49,12 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         }
 
         getServer().getPluginManager().registerEvents(new JoinListener(this), this);
+
+        // Control-bar clicks arrive as INTERACT_ENTITY packets aimed at our
+        // fake entity ids. packetevents is initialized by its own plugin (hard
+        // dependency, loaded before us); we only register a listener.
+        controlBarListener = PacketEvents.getAPI().getEventManager()
+                .registerListener(new ControlBarListener(this), PacketListenerPriority.NORMAL);
 
         registerVoicechat();
     }
@@ -99,8 +114,31 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 ? nativeInstaller.getPalettePath().toString() : null;
     }
 
+    public PlaylistManager getPlaylist() {
+        return playlist;
+    }
+
+    /** Audio configuration snapshot from the current config values. */
+    public AudioSettings buildAudioSettings() {
+        return new AudioSettings(
+                getConfig().getBoolean("audio-enabled", true),
+                getConfig().getString("ffmpeg-path", "ffmpeg"),
+                getConfig().getInt("audio-distance", 48),
+                AudioMode.fromConfig(getConfig().getString("audio-mode", "mono")),
+                getConfig().getInt("av-sync-delay-ms", 200),
+                getConfig().getInt("audio-start-delay-ms", 1000),
+                getConfig().getDouble("surround-rear-distance", 10.0));
+    }
+
     @Override
     public void onDisable() {
+        // Unregister from packetevents first (it outlives us; a stale listener
+        // would keep this instance alive across /reload and act on clicks).
+        if (controlBarListener != null) {
+            PacketEvents.getAPI().getEventManager().unregisterListener(controlBarListener);
+            controlBarListener = null;
+        }
+        playlist.clear(); // nothing should auto-start while shutting down
         PlaybackSession session = activeSession;
         if (session != null) {
             session.stop();
@@ -123,10 +161,15 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return true;
     }
 
-    /** Called by a session when it ends (EOF, error or /video stop). */
+    /**
+     * Called by a session when it ends (EOF, error, /video stop or skip).
+     * The playlist then starts the next queued item, if any — /video stop
+     * empties the queue before stopping, so a plain stop stays stopped.
+     */
     public synchronized void clearSession(PlaybackSession session) {
         if (activeSession == session) {
             activeSession = null;
+            playlist.scheduleAdvance();
         }
     }
 }

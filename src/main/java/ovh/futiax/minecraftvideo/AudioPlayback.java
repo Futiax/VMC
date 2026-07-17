@@ -147,6 +147,15 @@ public final class AudioPlayback {
         return !queue.isEmpty();
     }
 
+    /**
+     * Whether the reader has reached the end of ffmpeg's output. Used to stop
+     * waiting for priming on a source with no (or no more) audio, so a caller
+     * that blocks until {@link #isPrimed()} doesn't hang on a silent video.
+     */
+    public boolean hasReachedEof() {
+        return eof;
+    }
+
     /** Starts the SVC players; audio is audible from this call on. */
     public void begin() {
         for (AudioPlayer p : players) {

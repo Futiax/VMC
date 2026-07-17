@@ -18,7 +18,7 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
   and client logs in `test.log` (both untracked, at repo root).
 - Test sources: archive.org 5.1 test files (`Splash.mp4`, `surroundTest.mp4`).
 - Build with `./build.sh` (auto-bumps PATCH; `minor|major|set X.Y.Z|keep`).
-  Current version 0.3.1. `plugin.yml` gets `${project.version}` via Maven
+  Current version 0.4.3. `plugin.yml` gets `${project.version}` via Maven
   filtering (ONLY plugin.yml is filtered — filtering other resources would
   corrupt the bundled native binary).
 
@@ -91,6 +91,18 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
    audio partent ensemble. L'audio ne saute plus que `av-sync-delay-ms`
    (défaut 200) ; `audioSkipMillis()` = avSync seul. Segments seek (first =
    false) : pas de gel, audio dès isPrimed + rattrapage skipFrames.
+   **FIX 0.4.2 (décalage au seek)** : au play, `freezeFirstFrame()` prime
+   l'audio AVANT d'ancrer `playStartNanos` → audio/vidéo synchrones. Au seek
+   il n'y avait PAS d'attente : la vidéo partait pendant que l'audio bufferisait
+   encore, et le rattrapage `skipFrames` (non-bloquant, plafonné par la file
+   réelle) ne récupérait pas toujours → audio en RETARD. Nouveau
+   `awaitAudioPrimed(ap)` appelé avant l'ancrage pour TOUS les segments (no-op
+   au play, déjà primed ; attend le priming au seek), borné par
+   `audio-start-delay-ms` et relâché tôt si `AudioPlayback.hasReachedEof()`
+   (source muette → pas de stall). Cause résiduelle possible si le décalage
+   persiste EN AVANCE (pas en retard) : le fast-seek de mcmm (`-ss` avant `-i`)
+   cale sur le keyframe vidéo <P alors que l'audio ffmpeg seek plus finement →
+   à creuser côté mcmm.c (repo frère), PAS dans le plugin.
    **ATTENTION : la config déjà déployée sur le serveur garde
    `av-sync-delay-ms: 500` (saveDefaultConfig n'écrase pas) — passer la
    valeur à 200 à la main.** Réglage : son en retard → augmenter, en
@@ -126,28 +138,104 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
    +1 frame (seeks relatifs overshoot d'1 intervalle). Lentilles concurrence /
    régressions seek / parsing seek (`VideoCommand.java:248`) et
    `mcmm.c:381/731/795` : toujours jamais passées.
-4. **0.4.0 = batch UI (design validé avec l'utilisateur, PAS commencé).**
-   L'utilisateur débogue d'abord la 0.3.0 (freeze-frame + vrai upmix) en jeu.
-   Ensuite, dans cet ordre suggéré :
-   (1) **Playlist** : file de sources dans le plugin (`/video queue add`,
-   auto-advance à l'EOF naturel — PAS sur `/video stop`, qui vide la file),
-   `/video skip` = stop courant + next. Attention : le start du next passe
-   par le main thread ; ancre/anchor à stocker dans la file (l'initiateur
-   peut être déco) ; écran recréé par item (réutilisation si dims égales =
-   optim plus tard).
-   (2) **UI displays + Interaction entities** : barre de contrôle en
-   TextDisplay/ItemDisplay (fake ids ≥2e9 comme l'écran) + entités
-   `minecraft:interaction` cliquables ; le clic arrive en
-   PLAY_CLIENT_INTERACT_ENTITY (netty thread) → filtrer nos ids ;
-   pause/resume/seek/skip sont DÉJÀ thread-safe, pas de hop nécessaire
-   sauf pour les messages. Boutons : ⏯ ⏪ ⏩ ⏭.
-   (3) **Sous-titres** : approche TextDisplay overlay (PAS de burn-in mcmm :
-   illisible en 128px/map, et redémarrage vidéo à chaque toggle). ffmpeg
-   séparé `-map 0:s:<n> -f srt -` → parseur SRT → cues affichées sous
-   l'écran, synchro sur getPositionMillis(), re-seek du flux subs sur
-   /video seek. `/video subs list` via ffprobe (réutiliser probeChannels
-   comme modèle). Texte seulement (srt/ass/mov_text) ; PGS/VOBSUB = bitmap,
-   à détecter et refuser proprement.
+4. **0.4.0 = batch UI.**
+   (1) **Playlist : IMPLÉMENTÉ en 0.4.0 (17/07, à tester en jeu).**
+   `PlaylistManager` (main-thread only, `scheduleAdvance()` = seul point
+   cross-thread, déclenché par `clearSession`) ; `/video queue
+   add|list|remove <n>|clear`, `/video skip` (alias next) ; `stop` vide la
+   file AVANT de stopper ; item en file = ancre de la session active au
+   moment du add (l'écran ne bouge pas entre épisodes), options/audio lus au
+   START de l'item ; `queue add` à vide = lecture immédiate ; nouveau ctor
+   PlaybackSession(UUID, name, anchor) + getAnchor() ;
+   `plugin.buildAudioSettings()` factorisé.
+   (2) **Barre de contrôle : IMPLÉMENTÉE en 0.4.0 (17/07, à tester en jeu).**
+   `ControlBar` (possédée par VirtualScreen ; `control-bar-enabled`, défaut
+   true, lu dans le ctor de PlaybackSession = main thread) : 4 boutons
+   ⏪ ⏯ ⏩ ⏭ = TextDisplay (billboard VERTICAL : droit, pivote vers chaque
+   viewer — pas de convention de yaw FIXED à se tromper ; scale 2,
+   full-bright, fond par défaut) + INTERACTION 0.55×0.55 au même point
+   (les deux types s'ancrent au bas). GÉOMÉTRIE : PAS sous le bord bas
+   (= enterré, l'écran pose au niveau des pieds !) mais OVERLAY bas d'image :
+   baseline = bord bas +0.05, 0.6 devant le plan, espacement 0.9. Indices
+   metadata 1.21.x VÉRIFIÉS via EntityLib (Display 12=scale 15=billboard
+   16=brightness ; TextDisplay 23=text ADV_COMPONENT ; Interaction 8=w 9=h
+   10=responsive, mis true = swing feedback). Adventure : le jar packetevents
+   le bundle NON relocalisé + classloading Paper parent-first → même classe
+   Component partout, OK. `ControlBarListener` (unregister en onDisable AVANT
+   le stop) : côté netty zéro Bukkit — fast path id < VirtualScreen
+   .FAKE_ID_BASE, setCancelled pour TOUT id >= FAKE_ID_BASE AVANT le lookup de
+   session (sinon un clic arrivé 1 tick après un swap/stop de session — id
+   fake mais buttonAt=null → fuite au serveur vanilla ; fixé), filtre
+   INTERACT_AT + INTERACT off-hand → 1 action/clic, debounce 250 ms par UUID
+   packetevents — puis UN runTask main = permission minecraftvideo.use
+   (silencieux sinon) + action + message. skip = session.stop() seul
+   (clearSession → scheduleAdvance). Ids du bar inclus dans le destroy de
+   l'écran ; late joiners via addViewer → spawnFor. À VÉRIFIER EN JEU :
+   rendu des glyphes ⏪⏯⏩⏭ (Unifont), portée de clic (bar à ~3.4 blocs de
+   l'ancre, reach entité = 3 → avancer d'un pas), lisibilité scale 2,
+   recouvrement du bas de l'image acceptable.
+   (3) **Sous-titres : IMPLÉMENTÉ en 0.4.0 (17/07, à tester en jeu).**
+   Approche TextDisplay overlay (PAS de burn-in mcmm : illisible en 128px/map,
+   et redémarrage vidéo à chaque toggle). Nouvelles classes :
+   `SubtitleTrack` (record : index s:n, codec, langue, titre ; `textBased()`
+   refuse hdmv_pgs_subtitle/dvd_subtitle/dvb_subtitle/dvbsub/pgssub/xsub),
+   `SrtParser` (incrémental, nourri ligne par ligne : BOM, CRLF, index optionnel,
+   timecodes `hh:mm:ss,mmm`/`.mmm`, multi-ligne, strip `<i>/<b>/<font>` +
+   accolades ASS `{\anX}`), `SubtitleStream` (ffmpeg dédié
+   `-v error [-ss offset] -copyts -i src -map 0:s:<n> -f srt -`, thread reader
+   daemon → liste de cues triée ; `cueAtVideoMillis(pos)` = recherche binaire,
+   comparaison DIRECTE — **`-copyts` garde les timecodes ABSOLUS** (validé
+   ffmpeg 8 : sans lui, le rebasing subs est faux — ne décale pas de la valeur
+   du seek, ne drope pas les cues antérieures ; `-ss` = simple hint de vitesse,
+   peut laisser fuir des cues pré-offset, inactives donc jamais affichées) ;
+   stderr drainé sur SON PROPRE thread daemon (sinon deadlock pipe) ;
+   `probeTracks()` = ffprobe `-select_streams s -show_entries
+   stream=codec_name:stream_tags=language,title -of csv=p=0`, dérivation
+   ffprobe-depuis-ffmpeg comme AudioStream, timeout 20 s), `SubtitleOverlay`
+   (UNE fake TEXT_DISPLAY possédée par VirtualScreen, billboard VERTICAL,
+   full-bright, scale 1.4, **index 24 = line width INT = 320** [SEUL index au-delà
+   de ce que ControlBar exerce → à confirmer en jeu], baseline bottomEdge +0.7,
+   +0.8 de plus si control bar pour dégager les boutons ; `setText` idempotent
+   par cue = pas de spam metadata). Câblage PlaybackSession : `subtitleTrackIndex`
+   volatile (-1=off), `subtitles` (SubtitleStream) gardé par `lock` PAR SEGMENT
+   (fermé/relancé sur seek/stop comme l'audio), `subtitleTracks` caché comme
+   sourceAudioChannels. La boucle de frames relit `currentSubtitles()` chaque
+   frame (toggle mid-segment pris en compte) et pousse `cueAtVideoMillis
+   (getPositionMillis())` → sous-titres synchro PICTURE (pas d'avSync ; pause =
+   texte figé car boucle parkée ; timecodes absolus donc comparaison directe).
+   La boucle est LE SEUL writer de l'overlay (branche null = clear chaque frame),
+   ce qui ferme la race "cue figée après subs off". `finally` du
+   segment + entre-segments : `clearSubtitle()` pour ne pas figer l'ancienne cue
+   sur un seek. `/video subs list|<n>|off` (+ alias subtitles/none) : ffprobe
+   BLOQUANT → `runAsyncThenSync(session, ...)` (async ffprobe, retour main pour
+   action+chat, garde `getActiveSession()==session` pour ne pas appliquer un
+   probe de l'ancienne vidéo à la nouvelle). Tab-complete subs = list|off SEULEMENT
+   (les numéros viendraient d'un ffprobe bloquant, exclu du main thread).
+   Id de l'overlay inclus dans le destroy de l'écran ; spawn (caché) à chaque
+   viewer/late joiner. À VÉRIFIER EN JEU : index 24 line width accepté par le
+   client 1.21.8 (sinon paquet metadata rejeté → retirer l'index, défaut wrap
+   200), lisibilité scale 1.4, position au-dessus de la barre, rendu glyphes
+   accentués, synchro cue vs image, refus propre des pistes bitmap.
+   **Revue adversariale sous-titres (17/07) — 6 findings CONFIRMÉS corrigés :**
+   (a) enable mid-segment relançait le flux depuis le DÉBUT du segment
+   (`startSubtitleSegment(segmentOffsetMillis)`) → cue active en retard le temps
+   que ffmpeg rejoue toutes les cues ; passé à `getPositionMillis()` (l'`-ss`
+   atterrit près de "maintenant", timecodes absolus donc lookup inchangé).
+   (b) lookup 1 frame en avance : `framesSent++` avant le reconcile → on
+   comparait la frame affichée à la position de la frame SUIVANTE ; corrigé en
+   `getPositionMillis() - 1000/fps` (instant réel de la frame envoyée).
+   (c) back-scan overlap capé à 5 cues dans `cueAtVideoMillis` → une longue cue
+   bannière pouvait être dropée sous >5 cues courtes qui la chevauchent ; cap
+   retiré (scan complet `best..0`). (d) `probeTracks` lisait stdout APRÈS
+   `waitFor` avec `redirectErrorStream(true)` → deadlock pipe >64 KB (source
+   corrompue/multi-pistes) jusqu'au timeout 20 s ; drain sur thread daemon
+   DÉMARRÉ AVANT `waitFor`. (e) `probeTracks` renvoie désormais **`null` en cas
+   d'ÉCHEC** (ffprobe absent/timeout/IO) vs liste vide = "sondé, aucune piste" ;
+   `getSubtitleTracks` ne cache QUE les probes réussis (échec → `List.of()` au
+   caller, cache non figé → re-probe possible). (f) `SrtParser` : une ligne de
+   TEXTE contenant un timecode (`hh:mm:ss,mmm --> ...`) était prise pour un
+   nouvel en-tête (clear du texte en cours) ; le match timecode n'est tenté que
+   si aucune cue n'accumule (`pendingStart < 0`), sinon la ligne = texte.
 5. **Rien n'est commité** : tout le travail plugin (option/seek/surround/
    sync/upmix/build.sh/CLAUDE.md) est en working tree ici ; les changements
    mcmm (--seek, MCMM_STATIC) sont en working tree de ../MinecraftVideo

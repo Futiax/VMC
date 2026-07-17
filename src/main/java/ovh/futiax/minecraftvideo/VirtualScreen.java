@@ -34,7 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * The screen is placed a few blocks in front of the anchor player, vertical,
  * facing back toward the player. Tile (row 0, col 0) is the TOP-LEFT corner
- * from the viewer's point of view.
+ * from the viewer's point of view. The screen optionally owns a
+ * {@link ControlBar} (clickable playback buttons overlaid on its bottom edge)
+ * and always owns a {@link SubtitleOverlay} (a fake text display over the lower
+ * picture, hidden until a subtitle track is selected); both share the screen's
+ * viewer lifecycle: spawned with it, per late joiner, and removed by the same
+ * destroy packet.
  */
 public final class VirtualScreen {
 
@@ -42,9 +47,16 @@ public final class VirtualScreen {
      * Fake id spaces. Vanilla allocates entity ids and map ids upward from 0
      * each server start; a busy long-running server can pass 1,000,000, so we
      * start near Integer.MAX_VALUE to stay disjoint from real ids in practice.
+     * Any id >= FAKE_ID_BASE is one of ours (screen frames or control bar).
      */
-    private static final AtomicInteger ENTITY_ID_COUNTER = new AtomicInteger(2_000_000_000);
-    private static final AtomicInteger MAP_ID_COUNTER = new AtomicInteger(2_000_000_000);
+    static final int FAKE_ID_BASE = 2_000_000_000;
+    private static final AtomicInteger ENTITY_ID_COUNTER = new AtomicInteger(FAKE_ID_BASE);
+    private static final AtomicInteger MAP_ID_COUNTER = new AtomicInteger(FAKE_ID_BASE);
+
+    /** Allocates a fake entity id (one id space shared with the control bar). */
+    static int nextEntityId() {
+        return ENTITY_ID_COUNTER.getAndIncrement();
+    }
 
     /** Distance (in blocks) between the player and the screen plane. */
     private static final int SCREEN_DISTANCE = 4;
@@ -74,16 +86,23 @@ public final class VirtualScreen {
     private final int audienceUnitX;    // screen->audience unit vector (X), for rear speakers
     private final int audienceUnitZ;    // screen->audience unit vector (Z), for rear speakers
 
+    /** Clickable buttons under the screen; {@code null} when disabled. */
+    private final ControlBar controlBar;
+    /** Subtitle text display over the lower picture; hidden until a track is on. */
+    private final SubtitleOverlay subtitleOverlay;
+
     private final Set<Player> viewers = ConcurrentHashMap.newKeySet();
     private volatile byte[][] lastFrame;
 
     /**
-     * @param anchor the anchor player's location (captured on the main thread);
-     *               the screen is derived from its block position and yaw
-     * @param width  screen width in map tiles
-     * @param height screen height in map tiles
+     * @param anchor         the anchor player's location (captured on the main
+     *                       thread); the screen is derived from its block
+     *                       position and yaw
+     * @param width          screen width in map tiles
+     * @param height         screen height in map tiles
+     * @param withControlBar whether to attach the clickable control bar
      */
-    public VirtualScreen(Location anchor, int width, int height) {
+    public VirtualScreen(Location anchor, int width, int height, boolean withControlBar) {
         this.width = width;
         this.height = height;
 
@@ -93,7 +112,7 @@ public final class VirtualScreen {
         this.entityUuids = new UUID[tiles];
         this.positions = new Vector3d[tiles];
         for (int i = 0; i < tiles; i++) {
-            entityIds[i] = ENTITY_ID_COUNTER.getAndIncrement();
+            entityIds[i] = nextEntityId();
             mapIds[i] = MAP_ID_COUNTER.getAndIncrement();
             entityUuids[i] = UUID.randomUUID();
         }
@@ -159,6 +178,21 @@ public final class VirtualScreen {
                 positions[row * width + col] = new Vector3d(x + 0.5, y + 0.5, z + 0.5);
             }
         }
+
+        // Control bar overlaid on the bottom edge and subtitle overlay over the
+        // lower picture (both need the tile positions above for their geometry).
+        double[] sub = getSubAnchor();       // (center x, bottom tile center y, center z)
+        double bottomEdgeY = sub[1] - 0.5;   // bottom edge = bottom tile center - 0.5
+        if (withControlBar) {
+            this.controlBar = new ControlBar(sub[0], bottomEdgeY, sub[2],
+                    rightX, rightZ, audienceUnitX, audienceUnitZ);
+        } else {
+            this.controlBar = null;
+        }
+        // Always spawned (hidden) so subtitles can be toggled on at any time and
+        // late joiners get the display; lifted to clear the bar when present.
+        this.subtitleOverlay = new SubtitleOverlay(sub[0], bottomEdgeY, sub[2],
+                audienceUnitX, audienceUnitZ, withControlBar);
     }
 
     /** Spawns the screen for the given players and registers them as viewers. */
@@ -177,6 +211,10 @@ public final class VirtualScreen {
             return;
         }
         sendSpawnAndMetadata(player);
+        if (controlBar != null) {
+            controlBar.spawnFor(player);
+        }
+        subtitleOverlay.spawnFor(player); // hidden unless a cue is currently set
         byte[][] frame = lastFrame;
         if (frame != null) {
             sendMapData(player, frame);
@@ -200,10 +238,26 @@ public final class VirtualScreen {
 
     /** Sends entity-remove packets to all viewers and forgets them. */
     public void destroy() {
+        // One remove packet per viewer covering the frames, the control bar and
+        // the subtitle overlay (all fake ids the screen spawned).
+        List<Integer> idList = new ArrayList<>(entityIds.length + 8);
+        for (int id : entityIds) {
+            idList.add(id);
+        }
+        if (controlBar != null) {
+            for (int id : controlBar.getEntityIds()) {
+                idList.add(id);
+            }
+        }
+        idList.add(subtitleOverlay.getEntityId());
+        int[] ids = new int[idList.size()];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = idList.get(i);
+        }
         for (Player viewer : viewers) {
             if (viewer.isOnline()) {
                 PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
-                        new WrapperPlayServerDestroyEntities(entityIds.clone()));
+                        new WrapperPlayServerDestroyEntities(ids.clone()));
             }
         }
         viewers.clear();
@@ -266,6 +320,26 @@ public final class VirtualScreen {
         } else {
             return BlockFace.EAST;
         }
+    }
+
+    /** The clickable control bar under the screen, or {@code null} if disabled. */
+    public ControlBar getControlBar() {
+        return controlBar;
+    }
+
+    /**
+     * Shows {@code text} on the subtitle overlay for every current viewer (a
+     * {@code null}/blank hides it). Idempotent per cue: unchanged text sends
+     * nothing. Called from the playback thread; packetevents sending is
+     * thread-safe. Offline viewers are pruned lazily by {@link #sendFrame}.
+     */
+    public void setSubtitle(String text) {
+        subtitleOverlay.setText(text, viewers);
+    }
+
+    /** Hides the subtitle overlay for every current viewer. */
+    public void clearSubtitle() {
+        subtitleOverlay.clear(viewers);
     }
 
     public int getWidth() {

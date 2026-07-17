@@ -15,6 +15,12 @@ default-width: 4
 default-height: 3
 default-fps: 10
 
+# Clickable control bar floating under the screen (packet-only entities, like
+# the screen itself): rewind 10s / play-pause / forward 10s / skip to the next
+# queued video. Only players with the minecraftvideo.use permission can click
+# the buttons; everyone sees them. Applies to the next /video play.
+control-bar-enabled: true
+
 # --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
 # When enabled, the video's audio is streamed into a spatialised Simple Voice
 # Chat channel anchored at the screen. If SVC is absent, videos play silently.

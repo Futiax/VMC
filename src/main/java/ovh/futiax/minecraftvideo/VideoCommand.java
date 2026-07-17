@@ -16,12 +16,14 @@ import java.util.Locale;
  * /video option avsync &lt;ms&gt;                — set the persistent A/V sync delay
  * /video play &lt;url-or-path&gt; [w] [h] [fps]  — play with those options (args override)
  * /video seek &lt;+s|-s|[hh:]mm:ss&gt;           — skip or jump to a timestamp
+ * /video subs &lt;list|off|n&gt;                 — embedded subtitle track overlay
  * /video stop | pause | resume | status
  */
 public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
-            List.of("play", "option", "seek", "stop", "pause", "resume", "status");
+            List.of("play", "queue", "skip", "option", "seek", "subs", "stop",
+                    "pause", "resume", "status");
 
     private static final int MAX_DIMENSION = 16; // maps per axis
 
@@ -45,8 +47,11 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "play" -> handlePlay(sender, label, args);
+            case "queue" -> handleQueue(sender, label, args);
+            case "skip", "next" -> handleSkip(sender);
             case "option", "options" -> handleOption(sender, label, args);
             case "seek" -> handleSeek(sender, label, args);
+            case "subs", "subtitles" -> handleSubs(sender, label, args);
             case "stop" -> handleStop(sender);
             case "pause" -> handlePause(sender);
             case "resume", "unpause" -> handleResume(sender);
@@ -69,7 +74,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         if (active != null) {
             sender.sendMessage("A video is already playing"
                     + " (started by " + active.getInitiatorName() + ")."
-                    + " Use /" + label + " stop first.");
+                    + " Use /" + label + " queue add to queue it, or /"
+                    + label + " stop first.");
             return;
         }
 
@@ -115,17 +121,9 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("The color palette is missing. Set palette-path in the plugin config.");
             return;
         }
-        AudioSettings audioSettings = new AudioSettings(
-                plugin.getConfig().getBoolean("audio-enabled", true),
-                plugin.getConfig().getString("ffmpeg-path", "ffmpeg"),
-                plugin.getConfig().getInt("audio-distance", 48),
-                AudioMode.fromConfig(plugin.getConfig().getString("audio-mode", "mono")),
-                plugin.getConfig().getInt("av-sync-delay-ms", 200),
-                plugin.getConfig().getInt("audio-start-delay-ms", 1000),
-                plugin.getConfig().getDouble("surround-rear-distance", 10.0));
-
         PlaybackSession session = new PlaybackSession(plugin, player,
-                mcmmPath, palettePath, source, width, height, fps, audioSettings);
+                mcmmPath, palettePath, source, width, height, fps,
+                plugin.buildAudioSettings());
         if (!plugin.trySetActiveSession(session)) {
             sender.sendMessage("A video is already playing. Use /" + label + " stop first.");
             return;
@@ -134,6 +132,83 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         session.start(plugin.getServer().getOnlinePlayers());
         sender.sendMessage("[MinecraftVideo] Starting " + source
                 + " on a " + width + "x" + height + " screen at " + fps + " fps...");
+    }
+
+    /** /video queue [add <src>|list|remove <n>|clear] — manage the playlist. */
+    private void handleQueue(CommandSender sender, String label, String[] args) {
+        PlaylistManager playlist = plugin.getPlaylist();
+        String sub = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "list";
+        switch (sub) {
+            case "add" -> {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage("Only players can queue a video (the screen needs a position).");
+                    return;
+                }
+                if (args.length < 3) {
+                    sender.sendMessage("Usage: /" + label + " queue add <url-or-path>");
+                    return;
+                }
+                String source = stripSurroundingQuotes(args[2]);
+                int position = playlist.add(source, player);
+                if (plugin.getActiveSession() == null) {
+                    playlist.advance(); // idle: start it right away
+                } else {
+                    sender.sendMessage("[MinecraftVideo] Queued at position " + position
+                            + ": " + PlaylistManager.shorten(source));
+                }
+            }
+            case "list" -> {
+                if (playlist.isEmpty()) {
+                    sender.sendMessage("[MinecraftVideo] The queue is empty."
+                            + " Add with /" + label + " queue add <url-or-path>.");
+                    return;
+                }
+                sender.sendMessage("[MinecraftVideo] Queue (" + playlist.size() + "):");
+                for (String line : playlist.describe()) {
+                    sender.sendMessage("  " + line);
+                }
+            }
+            case "clear" -> {
+                int n = playlist.size();
+                playlist.clear();
+                sender.sendMessage("[MinecraftVideo] Queue cleared (" + n + " item(s) removed).");
+            }
+            case "remove" -> {
+                int position;
+                try {
+                    position = args.length >= 3 ? Integer.parseInt(args[2]) : -1;
+                } catch (NumberFormatException e) {
+                    position = -1;
+                }
+                if (position < 1) {
+                    sender.sendMessage("Usage: /" + label + " queue remove <position>"
+                            + " (see /" + label + " queue list)");
+                    return;
+                }
+                PlaylistManager.QueueItem removed = playlist.remove(position);
+                sender.sendMessage(removed != null
+                        ? "[MinecraftVideo] Removed #" + position + ": "
+                                + PlaylistManager.shorten(removed.source())
+                        : "No queue item #" + position + " (queue has "
+                                + playlist.size() + " item(s)).");
+            }
+            default -> sender.sendMessage("Usage: /" + label
+                    + " queue [add <url-or-path>|list|remove <n>|clear]");
+        }
+    }
+
+    /** /video skip — end the current video; the next queued item starts. */
+    private void handleSkip(CommandSender sender) {
+        PlaybackSession session = plugin.getActiveSession();
+        if (session == null) {
+            sender.sendMessage("No video is playing.");
+            return;
+        }
+        boolean hasNext = !plugin.getPlaylist().isEmpty();
+        session.stop(); // clearSession() auto-advances the playlist
+        sender.sendMessage(hasNext
+                ? "[MinecraftVideo] Skipped — starting the next queued video..."
+                : "[MinecraftVideo] Skipped (the queue is empty — stopped).");
     }
 
     /** Removes a matching pair of surrounding single or double quotes. */
@@ -300,6 +375,107 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    /**
+     * /video subs list — list the source's embedded subtitle tracks.
+     * /video subs &lt;n&gt;  — show subtitle track n (as an overlay under the screen).
+     * /video subs off  — hide subtitles.
+     *
+     * <p>{@code list} and {@code <n>} ffprobe the source, which can block for a
+     * URL, so the probe runs off the main thread; the resulting action and chat
+     * feedback are hopped back onto the main thread.
+     */
+    private void handleSubs(CommandSender sender, String label, String[] args) {
+        PlaybackSession session = plugin.getActiveSession();
+        if (session == null) {
+            sender.sendMessage("No video is playing.");
+            return;
+        }
+        String sub = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "list";
+        if (sub.equals("off") || sub.equals("none")) {
+            sender.sendMessage(session.disableSubtitles()
+                    ? "[MinecraftVideo] Subtitles off."
+                    : "Subtitles are already off.");
+            return;
+        }
+        if (sub.equals("list")) {
+            sender.sendMessage("[MinecraftVideo] Probing subtitle tracks...");
+            runAsyncThenSync(session, session::getSubtitleTracks, tracks -> {
+                if (tracks.isEmpty()) {
+                    sender.sendMessage("[MinecraftVideo] No embedded subtitle tracks"
+                            + " (or the source could not be probed).");
+                    return;
+                }
+                sender.sendMessage("[MinecraftVideo] Subtitle tracks (" + tracks.size() + "):");
+                for (SubtitleTrack track : tracks) {
+                    sender.sendMessage("  " + track.describe());
+                }
+                sender.sendMessage("Show one with /" + label + " subs <n>, hide with /"
+                        + label + " subs off.");
+            });
+            return;
+        }
+        // /video subs <n>
+        int index;
+        try {
+            index = Integer.parseInt(sub);
+        } catch (NumberFormatException e) {
+            sender.sendMessage("Usage: /" + label + " subs <list|off|track-number>");
+            return;
+        }
+        if (index < 0) {
+            sender.sendMessage("Subtitle track number must be 0 or greater (see /"
+                    + label + " subs list).");
+            return;
+        }
+        sender.sendMessage("[MinecraftVideo] Loading subtitle track " + index + "...");
+        runAsyncThenSync(session, session::getSubtitleTracks, tracks -> {
+            if (index >= tracks.size()) {
+                sender.sendMessage("No subtitle track " + index + " (source has "
+                        + tracks.size() + "; see /" + label + " subs list).");
+                return;
+            }
+            SubtitleTrack track = tracks.get(index);
+            if (!track.textBased()) {
+                sender.sendMessage("Track " + index + " (" + track.codec()
+                        + ") is a bitmap subtitle track, which is not supported"
+                        + " (only text tracks can be overlaid).");
+                return;
+            }
+            if (!session.setSubtitleTrack(index)) {
+                sender.sendMessage("The video is no longer playing.");
+                return;
+            }
+            sender.sendMessage("[MinecraftVideo] Showing subtitles: " + track.describe());
+        });
+    }
+
+    /**
+     * Runs {@code work} on an async thread, then delivers its result to
+     * {@code then} on the main thread — but only if {@code session} is still the
+     * active one (so a probe of the OLD video can't apply to a NEW one that
+     * started meanwhile). Keeps blocking ffprobe off the main thread while the
+     * action and chat feedback stay on it.
+     */
+    private <T> void runAsyncThenSync(PlaybackSession session,
+                                      java.util.function.Supplier<T> work,
+                                      java.util.function.Consumer<T> then) {
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            T result = work.get();
+            if (!plugin.isEnabled()) {
+                return; // plugin disabled while we probed; nothing to deliver
+            }
+            try {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    if (plugin.getActiveSession() == session && !session.isStopped()) {
+                        then.accept(result);
+                    }
+                });
+            } catch (IllegalStateException | org.bukkit.plugin.IllegalPluginAccessException e) {
+                // Disabled between the check and the schedule; the result is moot.
+            }
+        });
+    }
+
     /** Parses "90", "1:30" or "1:02:03" into millis. */
     private static long parseTimestampMillis(String s) {
         String[] parts = s.split(":");
@@ -318,13 +494,20 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleStop(CommandSender sender) {
+        // Empty the queue FIRST so clearSession() has nothing to auto-start:
+        // stop means stop, unlike /video skip.
+        int dropped = plugin.getPlaylist().size();
+        plugin.getPlaylist().clear();
         PlaybackSession session = plugin.getActiveSession();
         if (session == null) {
-            sender.sendMessage("No video is playing.");
+            sender.sendMessage(dropped > 0
+                    ? "[MinecraftVideo] Queue cleared (" + dropped + " item(s))."
+                    : "No video is playing.");
             return;
         }
         session.stop();
-        sender.sendMessage("[MinecraftVideo] Video stopped.");
+        sender.sendMessage("[MinecraftVideo] Video stopped."
+                + (dropped > 0 ? " Queue cleared (" + dropped + " item(s))." : ""));
     }
 
     private void handlePause(CommandSender sender) {
@@ -371,7 +554,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
         sender.sendMessage("  /" + label + " option avsync <ms>  — tune the A/V sync delay");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
+        sender.sendMessage("  /" + label + " queue [add <src>|list|remove <n>|clear]  — playlist");
+        sender.sendMessage("  /" + label + " skip  — jump to the next queued video");
         sender.sendMessage("  /" + label + " seek <+s|-s|[hh:]mm:ss>  — skip / jump to timestamp");
+        sender.sendMessage("  /" + label + " subs <list|off|n>  — embedded subtitle overlay");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
     }
 
@@ -383,6 +569,17 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             for (String sub : SUBCOMMANDS) {
                 if (sub.startsWith(prefix)) {
                     matches.add(sub);
+                }
+            }
+            return matches;
+        }
+        // /video queue <add|list|remove|clear>
+        if (args.length == 2 && args[0].equalsIgnoreCase("queue")) {
+            String prefix = args[1].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("add", "list", "remove", "clear")) {
+                if (v.startsWith(prefix)) {
+                    matches.add(v);
                 }
             }
             return matches;
@@ -428,6 +625,18 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             List<String> matches = new ArrayList<>();
             for (String v : List.of("+10", "-10", "0:00")) {
                 if (v.startsWith(args[1])) {
+                    matches.add(v);
+                }
+            }
+            return matches;
+        }
+        // /video subs <list|off|n> — track numbers come from /video subs list
+        // (probing here would block the main thread), so only the keywords.
+        if (args.length == 2 && args[0].equalsIgnoreCase("subs")) {
+            String prefix = args[1].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("list", "off")) {
+                if (v.startsWith(prefix)) {
                     matches.add(v);
                 }
             }

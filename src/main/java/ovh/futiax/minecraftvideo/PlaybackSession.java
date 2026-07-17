@@ -38,6 +38,13 @@ import java.util.concurrent.locks.LockSupport;
  * The audio ffmpeg is spawned BEFORE mcmm's blocking header read (pre-warm),
  * so for URL sources both pipelines connect in parallel.
  *
+ * <p><b>Subtitles.</b> An optional {@link SubtitleStream} (its own ffmpeg per
+ * segment, restarted at the new offset on seek — like the audio) extracts one
+ * embedded text track to SRT; the frame loop polls it at the video position
+ * ({@link #getPositionMillis()}, so cues track the picture and pauses hold the
+ * text) and drives the screen's subtitle overlay. Selected/cleared at runtime
+ * by {@code /video subs}.
+ *
  * <p>A daemon thread reads frames and paces them at the fps reported by the
  * stream header, using System.nanoTime deadlines (the next deadline is derived
  * from the previous one, so sleep jitter does not accumulate drift).
@@ -62,13 +69,33 @@ public final class PlaybackSession {
     private final int requestedHeight;
     private final int requestedFps;
     private final AudioSettings audioSettings;
+    /** Snapshot of control-bar-enabled, read in the ctor (main thread). */
+    private final boolean controlBarEnabled;
 
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final Object lock = new Object();
     private McmmStream stream;      // guarded by lock (current segment)
     private VirtualScreen screen;   // guarded by lock (whole session)
     private AudioPlayback audio;    // guarded by lock (current segment)
+    private SubtitleStream subtitles; // guarded by lock (current segment)
     private volatile Thread playbackThread;
+
+    /**
+     * Selected subtitle track (the {@code n} for ffmpeg {@code -map 0:s:n}), or
+     * -1 for none. Toggled by {@code /video subs}; read at each segment start to
+     * (re)launch the extraction stream, and by the frame loop to know whether to
+     * poll cues. Its extraction stream is per-segment (killed/relaunched on seek,
+     * like the audio), and cues are timed to the VIDEO (getPositionMillis()), not
+     * the audio, so no av-sync skip is applied to it.
+     */
+    private volatile int subtitleTrackIndex = -1;
+
+    /**
+     * Subtitle tracks ffprobe'd once per session (cached like
+     * {@link #sourceAudioChannels}): {@code null} = not probed yet. Populated by
+     * {@code /video subs list} / {@code /video subs <n>} on an async task.
+     */
+    private volatile List<SubtitleTrack> subtitleTracks;
 
     // Pause state. The playback thread parks on pauseLock while paused; mcmm and
     // the audio ffmpeg are throttled by pipe/queue backpressure meanwhile.
@@ -103,10 +130,24 @@ public final class PlaybackSession {
     public PlaybackSession(MinecraftVideoPlugin plugin, Player initiator,
                            String mcmmPath, String palettePath, String source,
                            int width, int height, int fps, AudioSettings audioSettings) {
+        this(plugin, initiator.getUniqueId(), initiator.getName(),
+                initiator.getLocation().clone(), mcmmPath, palettePath, source,
+                width, height, fps, audioSettings);
+    }
+
+    /**
+     * Variant with an explicit anchor, used by the playlist: a queued item
+     * keeps the screen where the previous video played, and its initiator may
+     * be offline by the time it starts.
+     */
+    public PlaybackSession(MinecraftVideoPlugin plugin, UUID initiatorId,
+                           String initiatorName, Location anchor,
+                           String mcmmPath, String palettePath, String source,
+                           int width, int height, int fps, AudioSettings audioSettings) {
         this.plugin = plugin;
-        this.initiatorId = initiator.getUniqueId();
-        this.initiatorName = initiator.getName();
-        this.anchor = initiator.getLocation().clone();
+        this.initiatorId = initiatorId;
+        this.initiatorName = initiatorName;
+        this.anchor = anchor;
         this.mcmmPath = mcmmPath;
         this.palettePath = palettePath;
         this.source = source;
@@ -114,6 +155,9 @@ public final class PlaybackSession {
         this.requestedHeight = height;
         this.requestedFps = fps;
         this.audioSettings = audioSettings;
+        // Sessions are constructed on the main thread (command or playlist
+        // advance), so reading the live config here is safe.
+        this.controlBarEnabled = plugin.getConfig().getBoolean("control-bar-enabled", true);
     }
 
     /**
@@ -164,6 +208,10 @@ public final class PlaybackSession {
             if (audio != null) {
                 audio.stop();
             }
+            if (subtitles != null) {
+                subtitles.close();
+                subtitles = null;
+            }
         }
         Thread thread = playbackThread;
         if (thread != null && thread != Thread.currentThread()) {
@@ -199,6 +247,23 @@ public final class PlaybackSession {
 
     public String getInitiatorName() {
         return initiatorName;
+    }
+
+    /** Screen anchor (position + facing), cloned; used to queue at the same spot. */
+    public Location getAnchor() {
+        return anchor.clone();
+    }
+
+    /**
+     * The active screen's control bar, or {@code null} while there is no
+     * screen yet or the bar is disabled. Safe from any thread (used by
+     * {@link ControlBarListener} on netty threads to match clicked entity
+     * ids); the critical section is a pure reference read.
+     */
+    public ControlBar getControlBar() {
+        synchronized (lock) {
+            return screen != null ? screen.getControlBar() : null;
+        }
     }
 
     /**
@@ -266,6 +331,10 @@ public final class PlaybackSession {
                 audio.stop();
                 audio = null;
             }
+            if (subtitles != null) {
+                subtitles.close(); // relaunched at the new offset next segment
+                subtitles = null;
+            }
         }
         // Seek implies resume: wake the playback thread if it is parked.
         if (paused.compareAndSet(true, false)) {
@@ -313,6 +382,37 @@ public final class PlaybackSession {
             }
             long t = System.nanoTime();
             LockSupport.parkNanos(Math.min(remaining, 50_000_000L));
+            remaining -= System.nanoTime() - t;
+        }
+    }
+
+    /**
+     * Parks until the audio has at least one frame buffered, so pacing can be
+     * anchored on an instant where {@link AudioPlayback#begin()} plays from the
+     * stream's first sample — video and audio then start strictly together.
+     *
+     * <p>On the first segment the freeze already primed the audio, so this
+     * returns at once; its real job is the SEEK path, which has no freeze:
+     * without it the video would pace ahead while ffmpeg is still buffering and
+     * the skip-frames catch-up cannot always recover, leaving the audio lagging
+     * after every seek. Bounded by {@code audio-start-delay-ms} and released
+     * early once the source proves to have no (more) audio ({@code eof}), so a
+     * silent video never stalls the seek. Reactive to stop/seek; pause extends
+     * the wait like the freeze does.
+     */
+    private void awaitAudioPrimed(AudioPlayback ap) {
+        if (ap == null) {
+            return;
+        }
+        long remaining = Math.max(0, audioSettings.audioStartDelayMillis()) * 1_000_000L;
+        while (remaining > 0 && !ap.isPrimed() && !ap.hasReachedEof()
+                && !stopped.get() && pendingSeekMillis.get() < 0) {
+            if (paused.get()) {
+                awaitResume(0); // parks until resume; the priming clock stops
+                continue;
+            }
+            long t = System.nanoTime();
+            LockSupport.parkNanos(Math.min(remaining, 20_000_000L));
             remaining -= System.nanoTime() - t;
         }
     }
@@ -453,7 +553,8 @@ public final class PlaybackSession {
                 // Build the screen from the header dimensions (authoritative) and
                 // spawn it under the lock so it cannot interleave with destroy().
                 scr = new VirtualScreen(anchor,
-                        newStream.getMapWidth(), newStream.getMapHeight());
+                        newStream.getMapWidth(), newStream.getMapHeight(),
+                        controlBarEnabled);
                 synchronized (lock) {
                     if (stopped.get()) {
                         return -1; // stop() already closed the stream
@@ -485,6 +586,12 @@ public final class PlaybackSession {
                 audioAttached = ap != null; // attachAudio closed preStream on failure
             }
 
+            // Launch the subtitle extraction for this segment if a track is on.
+            // Started at the segment offset (cues are timed to the picture, so no
+            // av-sync skip); the frame loop polls this.subtitles and drives the
+            // overlay, re-reading it so a mid-segment toggle also takes effect.
+            startSubtitleSegment(offsetMillis, scr);
+
             int fps = Math.max(1, newStream.getFps());
             long intervalNanos = 1_000_000_000L / fps;
             this.streamFps = fps;
@@ -509,10 +616,16 @@ public final class PlaybackSession {
                 // frame0 == null: instant EOF or killed; the loop below settles it.
             }
 
+            // Wait for the audio to buffer before anchoring the timeline, so
+            // video and audio start strictly together. On the first segment the
+            // freeze already primed it (no-op); on a seek there is no freeze, so
+            // this is what keeps the audio from lagging the picture afterwards.
+            awaitAudioPrimed(ap);
+
             // Pacing starts HERE: the video deadlines and the audio begin are
-            // anchored on the same post-freeze instant, so both timelines run
-            // from content 0 of this segment together.
-            pausedAccumNanos = 0; // pauses during the freeze already extended it
+            // anchored on the same instant, so both timelines run from content 0
+            // of this segment together.
+            pausedAccumNanos = 0; // pauses during the freeze/priming already counted
             this.playStartNanos = System.nanoTime();
             long deadline = playStartNanos + intervalNanos;
             long audioBeginNanos = playStartNanos;
@@ -561,6 +674,23 @@ public final class PlaybackSession {
                 totalSendNanos += (t2 - t1);
                 framesSent++;
 
+                // Reconcile the subtitle overlay from the video position every
+                // frame: the loop is the single writer, so re-reading the field
+                // picks up a mid-segment /video subs toggle AND continuously
+                // asserts "empty" once subtitles are off (closing the race where
+                // a stale cue could otherwise linger after /video subs off).
+                // setSubtitle is idempotent, so a steady state sends no packet.
+                SubtitleStream subs = currentSubtitles();
+                // framesSent was already incremented above, so getPositionMillis()
+                // points at the NEXT frame's time; the frame we just sent shows
+                // content one interval earlier. Reconcile against that instant so
+                // cues are not selected a frame early (fps 20 = -50 ms, fps 10 =
+                // -100 ms bias otherwise).
+                long shownMillis = getPositionMillis() - 1000L / fps;
+                scr.setSubtitle(subs != null && !subs.isClosed()
+                        ? subs.cueAtVideoMillis(shownMillis)
+                        : null);
+
                 long sleepNanos = deadline - System.nanoTime();
                 if (sleepNanos > 0) {
                     LockSupport.parkNanos(sleepNanos);
@@ -580,6 +710,7 @@ public final class PlaybackSession {
             }
         } finally {
             // Tear down this segment's pipelines; the screen persists.
+            VirtualScreen scrForClear;
             synchronized (lock) {
                 newStream.close();
                 if (stream == newStream) {
@@ -589,6 +720,16 @@ public final class PlaybackSession {
                     audio.stop();
                     audio = null;
                 }
+                if (subtitles != null) {
+                    subtitles.close();
+                    subtitles = null;
+                }
+                scrForClear = screen;
+            }
+            // Blank the overlay between segments so a seek doesn't leave the old
+            // cue frozen on screen until the new stream produces the next one.
+            if (scrForClear != null && subtitleTrackIndex >= 0) {
+                scrForClear.clearSubtitle();
             }
             if (preStream != null && !audioAttached) {
                 preStream.close();
@@ -675,6 +816,136 @@ public final class PlaybackSession {
             preStream.close();
             return null;
         }
+    }
+
+    /** Current segment's subtitle stream under the lock; {@code null} if none. */
+    private SubtitleStream currentSubtitles() {
+        synchronized (lock) {
+            return subtitles;
+        }
+    }
+
+    /**
+     * (Re)starts the subtitle extraction for a segment beginning at
+     * {@code offsetMillis} if a track is selected, replacing any existing
+     * stream, under the lock. Called from the playback thread at each segment
+     * start and from {@code /video subs <n>} mid-segment. A spawn failure logs
+     * and leaves subtitles off for the segment (playback continues).
+     */
+    private void startSubtitleSegment(long offsetMillis, VirtualScreen forScreen) {
+        int track = subtitleTrackIndex;
+        SubtitleStream started = null;
+        if (track >= 0) {
+            try {
+                started = new SubtitleStream(plugin.getLogger(),
+                        audioSettings.ffmpegPath(), source, track, offsetMillis);
+            } catch (Exception e) {
+                plugin.getLogger().warning("Subtitles unavailable (ffmpeg failed to start): "
+                        + e.getMessage());
+            }
+        }
+        SubtitleStream previous;
+        synchronized (lock) {
+            previous = subtitles;
+            // If stop() ran between the read above and here, don't leak ffmpeg.
+            if (stopped.get()) {
+                if (started != null) {
+                    started.close();
+                }
+                subtitles = null;
+                return;
+            }
+            subtitles = started;
+        }
+        if (previous != null) {
+            previous.close();
+        }
+        // Toggling on/off mid-segment: blank any leftover cue immediately.
+        if (started == null && forScreen != null) {
+            forScreen.clearSubtitle();
+        }
+    }
+
+    /**
+     * Selects subtitle track {@code index} (the {@code n} for
+     * {@code -map 0:s:n}) and starts extracting it for the current segment.
+     * Main thread (called from {@code /video subs}); the ffmpeg spawn is a
+     * non-blocking process start. Returns false if the session is stopped.
+     */
+    public boolean setSubtitleTrack(int index) {
+        if (stopped.get() || index < 0) {
+            return false;
+        }
+        subtitleTrackIndex = index;
+        VirtualScreen scr;
+        synchronized (lock) {
+            scr = screen;
+        }
+        // If a segment is live, launch the stream now at the CURRENT position
+        // (not the segment start): -ss lands ffmpeg near "now" so the active cue
+        // appears at once instead of after replaying every cue since the segment
+        // began. -copyts keeps times absolute, so lookups still need no offset.
+        // Otherwise the next segment's start picks up the new index.
+        if (scr != null) {
+            startSubtitleSegment(getPositionMillis(), scr);
+        }
+        return true;
+    }
+
+    /**
+     * Turns subtitles off: stops the extraction stream and blanks the overlay.
+     * Returns false if subtitles were already off.
+     */
+    public boolean disableSubtitles() {
+        if (subtitleTrackIndex < 0) {
+            return false;
+        }
+        subtitleTrackIndex = -1;
+        VirtualScreen scr;
+        SubtitleStream previous;
+        synchronized (lock) {
+            previous = subtitles;
+            subtitles = null;
+            scr = screen;
+        }
+        if (previous != null) {
+            previous.close();
+        }
+        if (scr != null) {
+            scr.clearSubtitle();
+        }
+        return true;
+    }
+
+    /** The currently selected subtitle track index, or -1 if subtitles are off. */
+    public int getSubtitleTrackIndex() {
+        return subtitleTrackIndex;
+    }
+
+    /**
+     * Lists the source's embedded subtitle tracks, ffprobe'd once and cached for
+     * the session (like {@link #sourceAudioChannels}). BLOCKING (ffprobe, up to
+     * ~20 s on a slow URL) — call it off the main thread. Never {@code null}.
+     *
+     * <p>Only a SUCCESSFUL probe is cached: {@link SubtitleStream#probeTracks}
+     * returns {@code null} on a transient failure (ffprobe missing, timeout,
+     * I/O error), which we DON'T cache — otherwise a one-off failure on the very
+     * first {@code /video subs} would poison every later call for the session.
+     * A failure yields an empty list to the caller (so its {@code isEmpty()}
+     * path still works) while leaving the cache unset for a retry.
+     */
+    public List<SubtitleTrack> getSubtitleTracks() {
+        List<SubtitleTrack> cached = subtitleTracks;
+        if (cached != null) {
+            return cached;
+        }
+        List<SubtitleTrack> probed = SubtitleStream.probeTracks(
+                plugin.getLogger(), audioSettings.ffmpegPath(), source);
+        if (probed == null) {
+            return List.of(); // probe failed: don't cache, allow a later retry
+        }
+        subtitleTracks = probed;
+        return probed;
     }
 
     /** Sends a chat message to the initiator on the main thread. */

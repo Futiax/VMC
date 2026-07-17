@@ -78,6 +78,9 @@ default-width: 4
 default-height: 3
 default-fps: 10
 
+# Clickable control bar overlaid on the screen's bottom edge (see Use).
+control-bar-enabled: true
+
 # Audio (requires Simple Voice Chat on server + clients).
 audio-enabled: true
 ffmpeg-path: "ffmpeg"
@@ -119,7 +122,12 @@ Permission: `minecraftvideo.use` (default: op).
   `1:02:03`). The screen is kept (the last frame stays up while the decoder
   reconnects at the target position); video and audio restart together at the
   target. Seeking while paused resumes playback.
-- `/video stop` — stops playback and removes the screen.
+- `/video queue add <url-or-path>` — queues a video to play after the current
+  one (starts immediately if nothing is playing). The screen stays where the
+  current video plays. `/video queue [list]`, `queue remove <n>` and
+  `queue clear` manage the list.
+- `/video skip` — ends the current video and starts the next queued one.
+- `/video stop` — stops playback, removes the screen and clears the queue.
 - `/video pause` / `/video resume` — freezes/continues the video and its audio.
   While paused, mcmm and the audio ffmpeg block on their pipe/queue (no decoding
   runs ahead), so both resume in sync.
@@ -127,6 +135,20 @@ Permission: `minecraftvideo.use` (default: op).
   budget, i.e. how much headroom you have. "4.5x headroom (78% idle)" means the
   pipeline could sustain ~4.5x the current fps; "BEHIND real time" means it
   can't keep up — lower the fps or the screen size.
+- `/video subs list` — lists the source's embedded subtitle tracks (index,
+  codec, language, title). `/video subs <n>` overlays text track `n` under the
+  screen; `/video subs off` hides it. Only **text** tracks (SubRip/ASS/mov_text)
+  can be overlaid — bitmap tracks (PGS/VOBSUB/DVB) are listed but refused. The
+  selection is per-playback (not persisted); a new `/video play` starts with
+  subtitles off. See the Subtitles section.
+
+**Control bar**: unless disabled in the config (`control-bar-enabled`), four
+clickable buttons float over the screen's bottom edge, video-player style —
+⏪ seek −10 s, ⏯ pause/resume, ⏩ seek +10 s, ⏭ skip to the next queued
+video. Left click and right click both work. Everyone sees the buttons, but
+only players with the `minecraftvideo.use` permission can use them. Like the
+screen, the bar is packet-only (fake text-display glyphs plus invisible
+Interaction hitboxes) — nothing exists server-side.
 
 All players online at start time see the screen; players who join during
 playback are added automatically and receive the current frame.
@@ -188,6 +210,34 @@ decrease. Because SVC channels are recreated on `/video seek`, a seek also
 resets any audio delay the client accumulated mid-play. (Client side, lowering
 Simple Voice Chat's `output_buffer_size` reduces the maximum possible lag.)
 
+## Subtitles
+
+Embedded subtitle tracks can be shown as a floating text overlay under the
+screen, with no re-encoding of the video (map tiles are 128 px, far too coarse
+to burn subtitles into legibly):
+
+- `/video subs list` runs `ffprobe` on the source and lists its subtitle
+  streams. `/video subs <n>` selects one; `/video subs off` hides it.
+- The selected track is transcoded to SubRip on the fly by a dedicated ffmpeg
+  (`ffmpeg -v error [-ss <offset>] -copyts -i <src> -map 0:s:<n> -f srt -`) and
+  parsed into timed cues. Cues are shown on **one fake `TEXT_DISPLAY`** over the
+  lower picture (above the control bar if present) — packet-only, like
+  everything else — and updated in place with metadata packets as they come and
+  go.
+- Timing follows the **picture**: `-copyts` keeps the original (absolute) cue
+  timestamps, so they are matched directly against the video position — pausing
+  holds the current line, and the subtitle ffmpeg is restarted on `/video seek`
+  (like the audio). No A/V-sync skew is applied to subtitles. Enabling subtitles
+  mid-playback seeks the extraction ffmpeg to the **current position** (not the
+  segment start), so the active line appears at once instead of after replaying
+  every earlier cue.
+- Only **text** codecs work (SubRip, ASS/SSA, mov_text): they carry extractable
+  text. **Bitmap** tracks (PGS, VOBSUB, DVB) are pre-rendered images with no
+  text, so they are listed but refused. Inline markup (`<i>`, `<b>`, ASS
+  overrides) is stripped; long lines wrap.
+- The selection is per-playback and not persisted — a fresh `/video play`
+  starts with subtitles off.
+
 ## mcmm `--stream` contract
 
 The plugin spawns:
@@ -237,6 +287,20 @@ EOF on stdout = end of video.
 - `VoicechatHook` / `AudioStream` / `AudioPlayback` implement the audio path
   (see the Audio section). A bounded queue decouples ffmpeg I/O from SVC's
   audio thread so the frame supplier never blocks on the network.
+- `ControlBar` / `ControlBarListener` implement the clickable buttons: per
+  button one TEXT_DISPLAY (the glyph; vertical billboard, full-bright) plus
+  one INTERACTION entity (the hitbox), spawned and destroyed with the screen.
+  Clicks arrive as serverbound INTERACT_ENTITY packets on the netty thread,
+  where they are filtered by fake entity id, cancelled (the ids don't exist
+  server-side), collapsed to one action per physical click (a right click
+  sends several packets) and debounced (250 ms per player); the action itself
+  (permission check, pause/seek/skip, chat feedback) runs in one main-thread
+  task.
+- `SubtitleStream` / `SrtParser` / `SubtitleTrack` / `SubtitleOverlay` implement
+  the subtitle overlay: `ffprobe` lists the tracks (like `AudioStream`), a
+  per-segment ffmpeg transcodes the chosen text track to SRT, `SrtParser`
+  turns it into timed cues, and the playback loop drives one fake `TEXT_DISPLAY`
+  (`SubtitleOverlay`, owned by the screen) from the video position.
 
 
 ### Example Status Output
@@ -259,16 +323,15 @@ EOF on stdout = end of video.
 - **Video seeking**: `/video seek +10 | -10 | <timestamp>` — relative skips and absolute jumps, keeping the screen up (v0.2.0, needs the bundled mcmm with `--seek`).
 - **A/V sync compensation** (v0.3.0): freeze-frame warm-up (`audio-start-delay-ms`) so the SVC client absorbs the screen spawn before any audio flows, then video and audio start together; configurable content skip (`av-sync-delay-ms`) against the client jitter buffer.
 - **Real stereo→5.1 upmix** (v0.3.0): sources with fewer than 6 channels get a true upmix in surround mode (synthesized center/rears/LFE) instead of silent speakers.
-
-### Planned for 0.4.0 (in-game UI batch)
-
-- **Playlist support**: a queue of sources (`/video queue add <src>`, auto-advance
-  at EOF) plus `/video skip` to jump to the next item.
-- **In-game control UI**: clickable controls next to the screen built from
-  text/item displays + Interaction entities (packet-only, like the screen
-  itself): play/pause, skip, seek.
-- **Subtitle track selection**: `/video subs list|<n>|off` while playing, when
-  the source has embedded subtitle tracks.
+- **Playlist support** (v0.4.0): `/video queue add|list|remove|clear`,
+  auto-advance at EOF, `/video skip`.
+- **In-game control bar** (v0.4.0): clickable ⏪ ⏯ ⏩ ⏭ buttons overlaid on
+  the screen's bottom edge, built from text displays + Interaction entities
+  (packet-only, like the screen itself).
+- **Subtitle overlay** (v0.4.0): `/video subs list|<n>|off` overlays an
+  embedded text subtitle track (SubRip/ASS/mov_text) on a fake text display
+  under the screen, timed to the picture and restarted on seek; bitmap tracks
+  (PGS/VOBSUB/DVB) are detected and refused.
 
 ### Future ideas
 

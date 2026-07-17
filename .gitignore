@@ -12,3 +12,5 @@ target/
 .settings/
 .classpath
 .project
+retours_ingame.md
+.gitignore
