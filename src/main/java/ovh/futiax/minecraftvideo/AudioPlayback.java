@@ -9,6 +9,7 @@ import de.maxhenkel.voicechat.api.opus.OpusEncoderMode;
 import org.bukkit.World;
 
 import java.util.UUID;
+import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -235,7 +236,7 @@ public final class AudioPlayback {
             return null;
         }
         if (paused) {
-            return SILENCE; // freeze: keep the channel open without draining
+            return Arrays.copyOf(SILENCE, SILENCE.length); // freeze: keep the channel open without draining
         }
         if (channel == 0) {
             return supplyMaster();
@@ -246,7 +247,7 @@ public final class AudioPlayback {
             return null;
         }
         short[][] f = current;
-        return (f != null && channel < f.length) ? f[channel] : SILENCE;
+        return (f != null && channel < f.length) ? f[channel] : Arrays.copyOf(SILENCE, SILENCE.length);
     }
 
     /** Channel 0: advances the shared stream, publishing each frame for the mirrors. */
@@ -255,7 +256,7 @@ public final class AudioPlayback {
             short[][] frame = queue.poll(20, TimeUnit.MILLISECONDS);
             if (frame != null) {
                 current = frame;
-                return frame[0];
+                return Arrays.copyOf(frame[0], frame[0].length);
             }
             if (eof && queue.isEmpty()) {
                 ended = true;   // real end of audio: the mirrors end this tick too
@@ -263,7 +264,7 @@ public final class AudioPlayback {
                 return null;
             }
             current = null;     // transient underrun: mirrors go silent with us
-            return SILENCE;
+            return Arrays.copyOf(SILENCE, SILENCE.length);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
