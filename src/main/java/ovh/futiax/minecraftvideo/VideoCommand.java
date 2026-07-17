@@ -121,10 +121,14 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("The color palette is missing. Set palette-path in the plugin config.");
             return;
         }
+        // Reference the cache for this direct play (released by the session when
+        // it ends); undo it if we lose the race to become the active session.
+        plugin.getMediaCache().reference(source);
         PlaybackSession session = new PlaybackSession(plugin, player,
                 mcmmPath, palettePath, source, width, height, fps,
                 plugin.buildAudioSettings());
         if (!plugin.trySetActiveSession(session)) {
+            plugin.getMediaCache().release(source);
             sender.sendMessage("A video is already playing. Use /" + label + " stop first.");
             return;
         }

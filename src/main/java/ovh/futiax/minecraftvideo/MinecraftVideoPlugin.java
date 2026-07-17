@@ -25,6 +25,9 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     /** FIFO of queued sources; auto-advances when the active session ends. */
     private final PlaylistManager playlist = new PlaylistManager(this);
 
+    /** Local cache for remote sources; null until onEnable reads the config. */
+    private MediaCache mediaCache;
+
     /** Simple Voice Chat hook; null when SVC is not installed. */
     private VoicechatHook voicechatHook;
 
@@ -38,6 +41,10 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
         nativeInstaller.install();
+
+        mediaCache = new MediaCache(getLogger(), getDataFolder().toPath(),
+                getConfig().getBoolean("cache-remote-sources", true),
+                getConfig().getInt("cache-max-size-mb", 2048));
 
         PluginCommand command = getCommand("video");
         if (command != null) {
@@ -118,6 +125,10 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return playlist;
     }
 
+    public MediaCache getMediaCache() {
+        return mediaCache;
+    }
+
     /** Audio configuration snapshot from the current config values. */
     public AudioSettings buildAudioSettings() {
         return new AudioSettings(
@@ -147,6 +158,9 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             session.join(2000);
         }
         activeSession = null;
+        if (mediaCache != null) {
+            mediaCache.purgeAll(); // remove any cached files on shutdown
+        }
     }
 
     public PlaybackSession getActiveSession() {

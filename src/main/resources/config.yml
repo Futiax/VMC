@@ -21,6 +21,23 @@ default-fps: 10
 # the buttons; everyone sees them. Applies to the next /video play.
 control-bar-enabled: true
 
+# --- Remote source cache ---
+# Download an http(s) source to a local file (plugins/MinecraftVideo/cache)
+# ONCE, so mcmm, the audio ffmpeg, ffprobe and the subtitle ffmpeg all read the
+# local file instead of each opening its own connection to the origin. This
+# avoids the concurrent-connection load that makes hosts like archive.org answer
+# "5XX Server Error", and means a seek or a subtitle toggle never re-fetches.
+# The file is kept while the URL is still queued or playing and removed once its
+# last occurrence ends; the whole cache is wiped on server stop. Local file
+# paths are always played directly (never cached).
+cache-remote-sources: true
+
+# Hard size cap: a remote source larger than this is REFUSED (a clear message,
+# not a silent stream). In megabytes.
+# For safety the download refuses non-public targets (loopback, link-local incl.
+# cloud metadata, private/CGNAT/ULA ranges), re-validated across redirects.
+cache-max-size-mb: 2048
+
 # --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
 # When enabled, the video's audio is streamed into a spatialised Simple Voice
 # Chat channel anchored at the screen. If SVC is absent, videos play silently.

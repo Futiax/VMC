@@ -65,6 +65,12 @@ public final class PlaybackSession {
     private final String mcmmPath;
     private final String palettePath;
     private final String source;
+    /**
+     * The path the pipelines actually read: the local cache file for a remote
+     * source (resolved once in {@link #run}), or {@code source} for a local
+     * path / before resolution. {@code source} stays the original for display.
+     */
+    private volatile String playSource;
     private final int requestedWidth;
     private final int requestedHeight;
     private final int requestedFps;
@@ -151,6 +157,7 @@ public final class PlaybackSession {
         this.mcmmPath = mcmmPath;
         this.palettePath = palettePath;
         this.source = source;
+        this.playSource = source;
         this.requestedWidth = width;
         this.requestedHeight = height;
         this.requestedFps = fps;
@@ -481,6 +488,28 @@ public final class PlaybackSession {
 
     private void run(List<Player> initialViewers) {
         try {
+            // Resolve the source once: a remote URL is downloaded to a local
+            // cache file so mcmm, audio, ffprobe and subtitles all read the
+            // local file (one connection, no re-fetch on seek). A local path
+            // passes through. Blocking; abort if the session is stopped meanwhile.
+            MediaCache cache = plugin.getMediaCache();
+            if (cache.isCacheable(source)) {
+                messageInitiator("Downloading " + shortSource() + " ...");
+            }
+            try {
+                this.playSource = cache.acquire(source, stopped::get);
+            } catch (IOException e) {
+                if (!stopped.get()) {
+                    // Detail goes to the server log only; the initiator gets a
+                    // generic message so the HTTP status / connection outcome of
+                    // a fetch can't be used as an internal-network probe oracle.
+                    plugin.getLogger().warning("Source unavailable (" + source + "): "
+                            + e.getMessage());
+                    messageInitiator("Could not load the source (see server log for details).");
+                }
+                return; // finally still runs: stop() + cache release
+            }
+
             long offsetMillis = 0;
             boolean first = true;
             while (!stopped.get()) {
@@ -504,6 +533,9 @@ public final class PlaybackSession {
             t.printStackTrace();
         } finally {
             stop(); // auto-stop at EOF or on error; idempotent
+            // Release this occurrence's cache reference AFTER stop() so the
+            // pipelines are done reading the file before it can be deleted.
+            plugin.getMediaCache().release(source);
         }
     }
 
@@ -528,7 +560,7 @@ public final class PlaybackSession {
         // Start the subprocess, then publish it BEFORE the blocking header
         // read so a concurrent stop()/seekTo() can kill mcmm and unblock us.
         McmmStream newStream = new McmmStream(plugin.getLogger(),
-                mcmmPath, palettePath, source,
+                mcmmPath, palettePath, playSource,
                 requestedWidth, requestedHeight, requestedFps, offsetMillis);
         synchronized (lock) {
             if (stopped.get()) {
@@ -762,11 +794,11 @@ public final class PlaybackSession {
                 srcChannels = sourceAudioChannels;
                 if (srcChannels == 0) { // first segment: probe once, cache for seeks
                     srcChannels = AudioStream.probeChannels(plugin.getLogger(),
-                            audioSettings.ffmpegPath(), source);
+                            audioSettings.ffmpegPath(), playSource);
                     sourceAudioChannels = srcChannels;
                 }
             }
-            return new AudioStream(plugin.getLogger(), audioSettings.ffmpegPath(), source,
+            return new AudioStream(plugin.getLogger(), audioSettings.ffmpegPath(), playSource,
                     audioSettings.mode().decodeChannels(), offsetMillis, srcChannels);
         } catch (Exception e) {
             plugin.getLogger().warning("Audio unavailable (ffmpeg failed to start): "
@@ -838,7 +870,7 @@ public final class PlaybackSession {
         if (track >= 0) {
             try {
                 started = new SubtitleStream(plugin.getLogger(),
-                        audioSettings.ffmpegPath(), source, track, offsetMillis);
+                        audioSettings.ffmpegPath(), playSource, track, offsetMillis);
             } catch (Exception e) {
                 plugin.getLogger().warning("Subtitles unavailable (ffmpeg failed to start): "
                         + e.getMessage());
@@ -940,7 +972,7 @@ public final class PlaybackSession {
             return cached;
         }
         List<SubtitleTrack> probed = SubtitleStream.probeTracks(
-                plugin.getLogger(), audioSettings.ffmpegPath(), source);
+                plugin.getLogger(), audioSettings.ffmpegPath(), playSource);
         if (probed == null) {
             return List.of(); // probe failed: don't cache, allow a later retry
         }

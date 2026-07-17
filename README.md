@@ -89,6 +89,15 @@ audio-distance: 48
 # Audio channel layout: mono | stereo | surround (see the Audio section).
 audio-mode: "mono"
 
+# Download an http(s) source to a local file once, so mcmm, audio, ffprobe and
+# subtitles all read the local file instead of each opening its own connection
+# to the origin (fixes 5XX rate-limiting on hosts like archive.org; a seek or
+# subtitle toggle never re-fetches). Kept while the URL is queued or playing,
+# removed afterwards; wiped on server stop. A source over the hard cap is
+# refused. Local paths are always played directly.
+cache-remote-sources: true
+cache-max-size-mb: 2048
+
 # Blocks behind the screen plane (toward the audience) for the surround rears.
 surround-rear-distance: 10
 

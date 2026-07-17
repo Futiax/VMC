@@ -45,6 +45,10 @@ public final class PlaylistManager {
                 : initiator.getLocation().clone();
         queue.add(new QueueItem(source, initiator.getUniqueId(),
                 initiator.getName(), anchor));
+        // Reference the cache for this queued occurrence: the file survives while
+        // any occurrence is still queued or playing. The reference is transferred
+        // to the session when advance() plays this item (session releases it).
+        plugin.getMediaCache().reference(source);
         return queue.size();
     }
 
@@ -57,6 +61,10 @@ public final class PlaylistManager {
     }
 
     public void clear() {
+        // Release each queued occurrence's cache reference before dropping them.
+        for (QueueItem item : queue) {
+            plugin.getMediaCache().release(item.source());
+        }
         queue.clear();
     }
 
@@ -65,7 +73,9 @@ public final class PlaylistManager {
         if (position < 1 || position > queue.size()) {
             return null;
         }
-        return queue.remove(position - 1);
+        QueueItem removed = queue.remove(position - 1);
+        plugin.getMediaCache().release(removed.source()); // occurrence dropped unplayed
+        return removed;
     }
 
     /** Numbered listing for {@code /video queue list}. */
@@ -104,12 +114,16 @@ public final class PlaylistManager {
         if (queue.isEmpty() || plugin.getActiveSession() != null) {
             return;
         }
+        // remove(0) here transfers this occurrence's cache reference to the
+        // session that will play it (the session releases it when it ends). The
+        // two early-outs below that do NOT start a session release it themselves.
         QueueItem item = queue.remove(0);
         String mcmmPath = plugin.resolveMcmmPath();
         String palettePath = plugin.resolvePalettePath();
         if (mcmmPath == null || palettePath == null) {
             plugin.getLogger().warning("Skipping queued video (mcmm or palette missing): "
                     + item.source());
+            plugin.getMediaCache().release(item.source()); // not played: drop its reference
             advance(); // try the next one
             return;
         }

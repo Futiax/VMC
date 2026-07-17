@@ -1,3 +1,4 @@
+# Build output
 target/
 *.class
 *.jar
@@ -5,6 +6,8 @@ target/
 *.nar
 *.ear
 *.db
+
+# IDE / OS
 .DS_Store
 .idea/
 *.iml
@@ -12,5 +15,7 @@ target/
 .settings/
 .classpath
 .project
+
+# Local test/feedback files (kept out of the repo; see CLAUDE.md)
 retours_ingame.md
-.gitignore
+*.log

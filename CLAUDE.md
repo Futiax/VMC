@@ -18,7 +18,7 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
   and client logs in `test.log` (both untracked, at repo root).
 - Test sources: archive.org 5.1 test files (`Splash.mp4`, `surroundTest.mp4`).
 - Build with `./build.sh` (auto-bumps PATCH; `minor|major|set X.Y.Z|keep`).
-  Current version 0.4.3. `plugin.yml` gets `${project.version}` via Maven
+  Current version 0.4.5. `plugin.yml` gets `${project.version}` via Maven
   filtering (ONLY plugin.yml is filtered — filtering other resources would
   corrupt the bundled native binary).
 
@@ -38,6 +38,32 @@ REPO `../MinecraftVideo/c version/mcmm.c` (uncommitted work lives on branch
   in the jar, extracted by `NativeInstaller` whenever the plugin version
   changes (`.installed-version` marker) — the auto version bump guarantees
   fresh natives on every deploy.
+- **MediaCache = seule écriture disque du plugin** (0.4.4). URLs http(s)
+  téléchargées UNE fois dans `<dataFolder>/cache`, puis mcmm + audio + ffprobe
+  + subs lisent le fichier LOCAL → supprime les connexions concurrentes qui
+  faisaient répondre archive.org en 5XX (diagnostiqué dans `latest.log` : 3-4
+  connexions simultanées vers le même mkv → rate-limit), et le seek/toggle subs
+  ne re-fetch plus. **Comptage de références** : `reference()` par occurrence
+  vivante (chaque item en file + le play direct), `release()` à sa fin ; fichier
+  supprimé au dernier release. Invariant : 1 reference + 1 release par
+  occurrence. La session `release` TOUJOURS dans le finally de `run()` (après
+  `stop()`, pour que les pipelines aient fini de lire) ; `PlaylistManager.add`
+  reference, `remove/clear` release, `advance` TRANSFÈRE la ref à la session
+  (pas de release) sauf skip mcmm-manquant (release explicite) ; `handlePlay`
+  reference + release si trySetActiveSession échoue. Download bloquant hors lock
+  (jamais le main thread), abortable via `stopped::get`, **cap DUR**
+  `cache-max-size-mb` (2048, refuse au-delà — pas de stream). `playSource`
+  (volatile, =source avant résolution) porté par la session ; `source` reste
+  l'original pour l'affichage. purge à onEnable (orphelins) + onDisable.
+  **Garde SSRF (0.4.5, suite à /security-review)** : `assertPublicHost` résout
+  TOUTES les IPs de l'hôte et refuse loopback/link-local (169.254 métadonnées
+  cloud)/site-local/CGNAT 100.64/8/ULA fc00::/7/wildcard/multicast ; redirects
+  suivis À LA MAIN (`Redirect.NEVER` + boucle, re-valide chaque `Location`,
+  cap 5, scheme http/https only) pour qu'un hôte public ne rebondisse pas vers
+  l'interne ; l'erreur détaillée ne va qu'au LOG serveur, le joueur reçoit un
+  message générique (pas d'oracle de scan de ports interne). Résiduel connu :
+  DNS-rebinding entre la validation et la connexion HttpClient (hors modèle de
+  menace = joueur avec `minecraftvideo.use`).
 - **PlaybackSession = segments**: `run()` loops `playSegment(offset)`;
   `/video seek` sets `pendingSeekMillis` (AtomicLong, -1 = none), closes the
   current McmmStream + stops audio under `lock`, force-resumes; the frame loop
