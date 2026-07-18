@@ -231,10 +231,14 @@ public final class VirtualScreen {
      * thread-safe (it writes directly to the player's netty channel).
      */
     public void sendFrame(byte[][] tiles) {
-        lastFrame = tiles;
+        byte[][] copiedTiles = new byte[tiles.length][];
+        for (int i = 0; i < tiles.length; i++) {
+            copiedTiles[i] = java.util.Arrays.copyOf(tiles[i], tiles[i].length);
+        }
+        lastFrame = copiedTiles;
         viewers.removeIf(viewer -> !viewer.isOnline());
         for (Player viewer : viewers) {
-            sendMapData(viewer, tiles);
+            sendMapData(viewer, copiedTiles);
         }
     }
 
