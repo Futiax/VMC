@@ -1,4 +1,4 @@
-# 🚧 MinecraftVideo (VMC)
+# MinecraftVideo (VMC)
 
 Plays videos on virtual in-game map screens on a Paper 1.21.8 server with synchronized, spatialized audio.
 
@@ -6,7 +6,7 @@ The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - **Server**: Paper 1.21.8 (or compatible) & Java 21
 - **Dependencies**: 
@@ -18,7 +18,7 @@ The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its
 
 ---
 
-## 🚀 Installation & Setup
+## Installation & Setup
 
 1. Install the [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin in your server's `plugins/` folder.
 2. (Optional for audio) Install the [**Simple Voice Chat**](https://modrinth.com/plugin/simple-voice-chat) plugin.
@@ -28,7 +28,7 @@ The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its
 
 ---
 
-## 🎮 Quick Start
+## Quick Start
 
 Requires the `minecraftvideo.use` permission (default: OP).
 
@@ -53,13 +53,13 @@ Requires the `minecraftvideo.use` permission (default: OP).
 
 ---
 
-## 📖 Full Documentation & Wiki
+## Full Documentation & Wiki
 
 For detailed information on advanced commands, custom configuration, spatial audio, and subtitles, see the **[Wiki & Documentation Guide (WIKI.md)](WIKI.md)**:
 
-- ⚙️ **[Screen size & FPS configuration](WIKI.md#-options-configuration-video-option)**
-- 🔊 **[Mono, Stereo & Surround audio modes](WIKI.md#-audio-modes--spatialization)**
-- 💬 **[Subtitle track rendering](WIKI.md#-subtitle-tracking-video-subs)**
-- 📋 **[Playlist & Queue management](WIKI.md#-advanced-commands-reference)**
-- 🛠️ **[A/V Sync and delay adjustment](WIKI.md#-options-configuration-video-option)**
-- 🔨 **[Building & Compiling from source](WIKI.md#-building--compiling-from-source)**
+- **[Screen size & FPS configuration](WIKI.md#options-configuration-video-option)**
+- **[Mono, Stereo & Surround audio modes](WIKI.md#audio-modes--spatialization)**
+- **[Subtitle track rendering](WIKI.md#subtitle-tracking-video-subs)**
+- **[Playlist & Queue management](WIKI.md#advanced-commands-reference)**
+- **[A/V Sync and delay adjustment](WIKI.md#options-configuration-video-option)**
+- **[Building & Compiling from source](WIKI.md#building--compiling-from-source)**

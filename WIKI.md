@@ -1,21 +1,21 @@
-# 🚧 MinecraftVideo (VMC) Wiki & Documentation
+# MinecraftVideo (VMC) Wiki & Documentation
 
 Welcome to the full documentation for **MinecraftVideo (VMC)**. This wiki covers advanced commands, spatial audio configurations, subtitle track rendering, technical architecture, and custom compilation.
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
-1. [Advanced Commands Reference](#-advanced-commands-reference)
-2. [Options Configuration (`/video option`)](#%EF%B8%8F-options-configuration-video-option)
-3. [Subtitle Tracking (`/video subs`)](#-subtitle-tracking-video-subs)
-4. [Audio Modes & Spatialization](#-audio-modes--spatialization)
-5. [Technical Architecture & Performance](#-technical-architecture--performance)
-6. [Building & Compiling From Source](#-building--compiling-from-source)
+1. [Advanced Commands Reference](#advanced-commands-reference)
+2. [Options Configuration (video option)](#options-configuration-video-option)
+3. [Subtitle Tracking (video subs)](#subtitle-tracking-video-subs)
+4. [Audio Modes & Spatialization](#audio-modes--spatialization)
+5. [Technical Architecture & Performance](#technical-architecture--performance)
+6. [Building & Compiling From Source](#building--compiling-from-source)
 
 ---
 
-## 💬 Advanced Commands Reference
+## Advanced Commands Reference
 
 All commands require the `minecraftvideo.use` permission (default: OP).
 
@@ -37,7 +37,7 @@ All commands require the `minecraftvideo.use` permission (default: OP).
 
 ---
 
-## ⚙️ Options Configuration (`/video option`)
+## Options Configuration (video option)
 
 The `/video option` command allows you to view or set configuration parameters on the fly, which are persisted to the server's `config.yml`.
 
@@ -52,7 +52,7 @@ The `/video option` command allows you to view or set configuration parameters o
 ```
 /video option audio <mono|stereo|surround>
 ```
-Sets the spatial audio rendering mode. (See the [Audio Modes](#-audio-modes--spatialization) section below).
+Sets the spatial audio rendering mode. (See the [Audio Modes](#audio-modes--spatialization) section below).
 
 ### A/V Synchronization
 ```
@@ -71,7 +71,7 @@ Adjusts the 3D text overlay placement for subtitles:
 
 ---
 
-## 💬 Subtitle Tracking (`/video subs`)
+## Subtitle Tracking (video subs)
 
 VMC supports rendering text-based subtitles embedded inside your video files. Subtitles are displayed as a 3D text display entity located directly in front of the virtual screen.
 
@@ -86,7 +86,7 @@ VMC supports rendering text-based subtitles embedded inside your video files. Su
 
 ---
 
-## 🔊 Audio Modes & Spatialization
+## Audio Modes & Spatialization
 
 Minecraft does not support raw streaming audio channels by default. VMC achieves synced sound by streaming decoded mono PCM audio through **Simple Voice Chat**'s addon API. 
 
@@ -104,7 +104,7 @@ Depending on your configuration, VMC can spatialize the audio in three ways:
 
 ---
 
-## 🛠️ Technical Architecture & Performance
+## Technical Architecture & Performance
 
 VMC is built for speed and low server overhead:
 
@@ -126,7 +126,7 @@ graph TD
 
 ---
 
-## 🔨 Building & Compiling From Source
+## Building & Compiling From Source
 
 If you want to compile VMC yourself or build for a platform other than Linux x64:
 
