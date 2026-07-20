@@ -50,6 +50,27 @@ cache-remote-sources: true
 # cloud metadata, private/CGNAT/ULA ranges), re-validated across redirects.
 cache-max-size-mb: 2048
 
+# --- YouTube (and 1000+ other sites) support, via yt-dlp ---
+# When enabled, an http(s) source that is NOT a direct media file (a YouTube
+# watch page, etc.) is resolved to a directly-playable stream URL with yt-dlp.
+# A low-res COMBINED format (video+audio in one url) is picked, which is exactly
+# right for 128px map screens. Requires the remote-source cache above to be on
+# (default): the resolved url is downloaded once, which also sidesteps its ~6h
+# expiry. Direct media URLs and local paths ignore yt-dlp entirely.
+#
+# yt-dlp is NOT bundled (it is ~30 MB per platform and its extractors break
+# often). Instead the plugin finds it in this order and, only if needed,
+# downloads it ONCE from yt-dlp's official GitHub releases into
+# plugins/MinecraftVideo/bin (then self-updates it in the background):
+#   1. yt-dlp-path below, if set;
+#   2. a yt-dlp already on the server's PATH (preferred: the admin maintains it);
+#   3. a copy this plugin downloads on the first YouTube-style play.
+youtube-support: true
+
+# Explicit path to a yt-dlp executable. Leave EMPTY to auto-detect / auto-download
+# as described above. Set it to use a specific build (or a PATH name like "yt-dlp").
+yt-dlp-path: ""
+
 # --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
 # When enabled, the video's audio is streamed into a spatialised Simple Voice
 # Chat channel anchored at the screen. If SVC is absent, videos play silently.

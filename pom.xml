@@ -6,7 +6,7 @@
 
     <groupId>ovh.futiax</groupId>
     <artifactId>minecraftvideo-plugin</artifactId>
-    <version>0.4.8</version>
+    <version>0.5.0</version>
     <packaging>jar</packaging>
 
     <name>MinecraftVideo</name>
@@ -45,7 +45,7 @@
         <dependency>
             <groupId>com.github.retrooper</groupId>
             <artifactId>packetevents-spigot</artifactId>
-            <version>2.11.2</version>
+            <version>2.13.0</version>
             <scope>provided</scope>
         </dependency>
         <!-- Simple Voice Chat API: provided by the SVC mod/plugin at runtime,

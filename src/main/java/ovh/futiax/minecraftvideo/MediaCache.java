@@ -54,6 +54,8 @@ public final class MediaCache {
     private final Path cacheDir;
     private final boolean enabled;
     private final long maxBytes;
+    /** Resolves page URLs (YouTube etc.) to a stream URL; null = disabled. */
+    private final YtDlpResolver resolver;
 
     /** One cached URL: the local file (null until downloaded) and its refcount. */
     private static final class Entry {
@@ -71,11 +73,13 @@ public final class MediaCache {
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
-    public MediaCache(Logger logger, Path dataFolder, boolean enabled, int maxSizeMb) {
+    public MediaCache(Logger logger, Path dataFolder, boolean enabled, int maxSizeMb,
+                      YtDlpResolver resolver) {
         this.logger = logger;
         this.cacheDir = dataFolder.resolve("cache");
         this.enabled = enabled;
         this.maxBytes = Math.max(0L, (long) maxSizeMb) * 1024L * 1024L;
+        this.resolver = resolver;
         if (enabled) {
             purgeDir(); // clear orphans left by a previous crash/stop
         }
@@ -173,7 +177,11 @@ public final class MediaCache {
         Path target = cacheDir.resolve(cacheName(source));
         Path tmp = cacheDir.resolve(cacheName(source) + ".part");
 
-        HttpResponse<InputStream> response = fetch(source);
+        // Resolve a page URL (YouTube etc.) to a direct stream via yt-dlp; a
+        // direct media URL passes straight through. The cache key stays the
+        // ORIGINAL source (stable across re-plays), only the fetched URL differs.
+        String fetchUrl = resolver != null ? resolver.resolve(source) : source;
+        HttpResponse<InputStream> response = fetch(fetchUrl);
         // Reject early on an advertised size over the cap.
         long advertised = response.headers().firstValueAsLong("content-length").orElse(-1L);
         if (maxBytes > 0 && advertised > maxBytes) {

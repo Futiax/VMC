@@ -4,6 +4,8 @@ Plays videos on virtual in-game map screens on a Paper 1.21.8 server with synchr
 
 The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its decoded frames to players as map packets. **Everything is virtual**: fake entity IDs, fake map IDs, packets only — nothing is written to the world or to disk.
 
+Play from **local files**, **direct URLs**, or **YouTube** (and 1000+ other sites): a page URL is resolved to a playable stream with `yt-dlp`, which the plugin auto-downloads on first use if it isn't already installed — no manual setup.
+
 ---
 
 ## Requirements
@@ -13,6 +15,7 @@ The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its
   - [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin (Required, >= 2.11.2)
   - **ffmpeg & ffprobe** installed on the server and added to your system `PATH` (Required for audio & subtitles)
   - [**Simple Voice Chat**](https://modrinth.com/plugin/simple-voice-chat) mod/plugin (Optional, required for audio; must be installed on both the server and clients, >= 2.6.0)
+  - **yt-dlp** (Optional, for YouTube-style URLs; auto-downloaded on first use if not already on the server's `PATH`. Requires the remote-source cache to stay enabled — the default.)
 
 *Note: The native `mcmm` binary and vanilla color palette are bundled inside the jar and extracted automatically on first start. Only a statically-linked `linux-x64` binary is bundled by default.*
 
@@ -36,7 +39,7 @@ Requires the `minecraftvideo.use` permission (default: OP).
   ```
   /video play <url-or-path>
   ```
-  *Spawns a virtual screen in front of you and plays the video (e.g. from a local path or direct URL).*
+  *Spawns a virtual screen in front of you and plays the video (a local path, a direct URL, or a YouTube link — page URLs are resolved with yt-dlp, which the plugin auto-downloads on first use if it isn't already on the server's PATH).*
 - **Pause / Resume**:
   ```
   /video pause

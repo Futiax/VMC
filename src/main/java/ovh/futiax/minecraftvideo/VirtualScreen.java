@@ -17,6 +17,7 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -224,17 +225,32 @@ public final class VirtualScreen {
     }
 
     /**
-     * Sends one full 128x128 map-data packet per tile to every current viewer
-     * and remembers the frame for late joiners.
+     * Sends the CHANGED tiles of this frame to every current viewer and
+     * remembers the frame for late joiners (who get every tile via addViewer).
      *
-     * Safe to call from an async thread: packetevents packet sending is
+     * <p>A tile whose bytes are identical to the previous frame is skipped: the
+     * client keeps displaying the old map, so a whole map-data packet is saved.
+     * Client bandwidth is the real bottleneck, so this is a direct win on
+     * unchanging regions (letterbox bars, still scenes) and never costs anything
+     * on moving content (just the per-tile byte compare, done once per frame,
+     * not per viewer). The first frame (no previous) sends every tile.
+     *
+     * <p>Safe to call from an async thread: packetevents packet sending is
      * thread-safe (it writes directly to the player's netty channel).
      */
     public void sendFrame(byte[][] tiles) {
+        byte[][] previous = lastFrame;
         lastFrame = tiles;
         viewers.removeIf(viewer -> !viewer.isOnline());
-        for (Player viewer : viewers) {
-            sendMapData(viewer, tiles);
+        int count = Math.min(tiles.length, mapIds.length);
+        for (int i = 0; i < count; i++) {
+            if (previous != null && i < previous.length
+                    && Arrays.equals(tiles[i], previous[i])) {
+                continue; // unchanged tile: the client keeps the current map
+            }
+            for (Player viewer : viewers) {
+                sendTile(viewer, i, tiles[i]);
+            }
         }
     }
 
@@ -294,20 +310,26 @@ public final class VirtualScreen {
         }
     }
 
+    /** Sends every tile to a player (used for a fresh/late viewer). */
     private void sendMapData(Player player, byte[][] tiles) {
         int count = Math.min(tiles.length, mapIds.length);
         for (int i = 0; i < count; i++) {
-            WrapperPlayServerMapData mapData = new WrapperPlayServerMapData(
-                    mapIds[i],
-                    (byte) 0,                 // scale: fully zoomed in
-                    false,                    // trackingPosition
-                    true,                     // locked
-                    Collections.emptyList(),  // no decorations
-                    128, 128,                 // columns, rows: full update
-                    0, 0,                     // x, z offsets
-                    tiles[i]);
-            PacketEvents.getAPI().getPlayerManager().sendPacket(player, mapData);
+            sendTile(player, i, tiles[i]);
         }
+    }
+
+    /** Sends one tile's full 128x128 map-data packet to a player. */
+    private void sendTile(Player player, int index, byte[] tile) {
+        WrapperPlayServerMapData mapData = new WrapperPlayServerMapData(
+                mapIds[index],
+                (byte) 0,                 // scale: fully zoomed in
+                false,                    // trackingPosition
+                true,                     // locked
+                Collections.emptyList(),  // no decorations
+                128, 128,                 // columns, rows: full tile update
+                0, 0,                     // x, z offsets
+                tile);
+        PacketEvents.getAPI().getPlayerManager().sendPacket(player, mapData);
     }
 
     /** Maps a player yaw to the horizontal BlockFace the player looks at. */

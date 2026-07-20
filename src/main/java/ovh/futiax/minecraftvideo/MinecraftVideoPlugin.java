@@ -42,9 +42,14 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         saveDefaultConfig();
         nativeInstaller.install();
 
+        YtDlpInstaller ytDlpInstaller = new YtDlpInstaller(getLogger(),
+                getDataFolder().toPath(),
+                getConfig().getBoolean("youtube-support", true),
+                getConfig().getString("yt-dlp-path", ""));
         mediaCache = new MediaCache(getLogger(), getDataFolder().toPath(),
                 getConfig().getBoolean("cache-remote-sources", true),
-                getConfig().getInt("cache-max-size-mb", 2048));
+                getConfig().getInt("cache-max-size-mb", 2048),
+                new YtDlpResolver(ytDlpInstaller, getLogger()));
 
         PluginCommand command = getCommand("video");
         if (command != null) {
