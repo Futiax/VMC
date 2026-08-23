@@ -6,20 +6,15 @@ import de.maxhenkel.voicechat.api.VoicechatServerApi;
 import de.maxhenkel.voicechat.api.events.EventRegistration;
 import de.maxhenkel.voicechat.api.events.VoicechatServerStartedEvent;
 
-/**
- * Registers this plugin as a Simple Voice Chat addon and captures the
- * {@link VoicechatServerApi} once the voice chat server starts.
- *
- * Registered in {@code onEnable} via
- * {@code getServicesManager().load(BukkitVoicechatService.class).registerPlugin(...)}.
- * When SVC is not installed the service is absent and this is never registered,
- * so playback simply runs without audio.
- *
- * NOTE: {@link VoicechatServerStartedEvent} fires when the SVC server starts,
- * which on a normal boot happens after plugins enable. If this plugin is
- * hot-reloaded on its own while SVC is already running the event may not
- * re-fire; a full server restart always yields the api.
- */
+// Enregistre le plugin comme addon Simple Voice Chat et recupere le VoicechatServerApi
+// au demarrage du serveur vocal. Branche dans onEnable via
+// getServicesManager().load(BukkitVoicechatService.class).registerPlugin(...).
+// Si SVC n'est pas installe le service n'existe pas, on n'enregistre rien et la lecture
+// tourne simplement sans son.
+//
+// ATTENTION : VoicechatServerStartedEvent part au demarrage du serveur SVC, donc apres
+// l'enable des plugins sur un boot normal. Si on reload le plugin tout seul alors que SVC
+// tourne deja l'event peut ne pas repartir -> un vrai restart donne toujours l'api.
 public final class VoicechatHook implements VoicechatPlugin {
 
     public static final String PLUGIN_ID = "minecraftvideo";
@@ -33,7 +28,7 @@ public final class VoicechatHook implements VoicechatPlugin {
 
     @Override
     public void initialize(VoicechatApi api) {
-        // Server api is obtained from the started event below.
+        // rien ici, l'api serveur arrive par l'event plus bas
     }
 
     @Override
@@ -42,8 +37,7 @@ public final class VoicechatHook implements VoicechatPlugin {
                 event -> serverApi = event.getVoicechat());
     }
 
-    /** @return the server api, or {@code null} if SVC has not started yet. */
-    public VoicechatServerApi getServerApi() {
+    public VoicechatServerApi getServerApi() {       // null tant que SVC n'a pas demarre
         return serverApi;
     }
 

@@ -15,31 +15,25 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
-/**
- * Provides a usable {@code yt-dlp} executable so http(s) sources that aren't
- * direct media files (YouTube and the hundreds of other sites yt-dlp supports)
- * can be resolved to a playable stream URL — WITHOUT the admin installing
- * anything.
- *
- * <p>Resolution order (first hit wins, cached for the session):
- * <ol>
- *   <li>a configured {@code yt-dlp-path};</li>
- *   <li>a {@code yt-dlp} already on the system PATH;</li>
- *   <li>a binary this plugin downloads ONCE from yt-dlp's official GitHub
- *       releases into {@code <dataFolder>/bin}.</li>
- * </ol>
- *
- * <p>Downloading rather than bundling keeps the jar tiny (the standalone yt-dlp
- * is ~30 MB, and it would need one per platform) and — crucially — lets yt-dlp
- * stay current: YouTube breaks extractors often, so a frozen bundled copy would
- * rot and force a plugin re-release on every break. The downloaded binary
- * self-updates ({@code yt-dlp -U}, kicked off in the background).
- *
- * <p>{@link #getExecutable()} may block (the one-off download); call it off the
- * main thread. It returns {@code null} when yt-dlp is disabled or unavailable
- * (no PATH copy, platform unsupported, download failed) — the caller then just
- * doesn't get YouTube-style URL resolution.
- */
+// Fournit un yt-dlp utilisable, pour que les sources http(s) qui ne sont pas des fichiers
+// media directs (YouTube et les centaines d'autres sites que yt-dlp gere) puissent etre
+// resolues en flux jouable, SANS que l'admin ait rien a installer.
+//
+// Ordre de resolution (premier trouve gagne, cache pour la session) :
+//   1. un yt-dlp-path configure
+//   2. un yt-dlp deja dans le PATH
+//   3. un binaire que le plugin telecharge UNE fois depuis les releases GitHub officielles
+//      de yt-dlp, dans <dataFolder>/bin
+//
+// Telecharger plutot qu'embarquer : ca garde le jar minuscule (le yt-dlp standalone fait
+// ~30 Mo, et il en faudrait un par plateforme) et surtout ca laisse yt-dlp rester a jour.
+// YouTube casse les extracteurs regulierement, donc une copie figee pourrirait et forcerait
+// une release du plugin a chaque casse. Le binaire telecharge se met a jour tout seul
+// (yt-dlp -U lance en arriere-plan).
+//
+// getExecutable() peut BLOQUER (le telechargement ponctuel) : jamais depuis le main thread.
+// Renvoie null quand yt-dlp est desactive ou indispo (pas de copie dans le PATH, plateforme
+// non supportee, download rate) : l'appelant n'a alors juste pas la resolution d'URL.
 public final class YtDlpInstaller {
 
     private static final String RELEASE_BASE =
@@ -51,12 +45,12 @@ public final class YtDlpInstaller {
     private final String configuredPath;
 
     private final HttpClient http = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL) // GitHub -> CDN; internal, trusted URL
+            .followRedirects(HttpClient.Redirect.NORMAL) // GitHub -> CDN, URL interne de confiance
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
-    private String resolved;    // cached usable path once found
-    private boolean attempted;  // don't re-run the whole (possibly downloading) probe every call
+    private String resolved;    // chemin utilisable, une fois trouve
+    private boolean attempted;  // pour ne pas refaire toute la sonde (avec download) a chaque appel
 
     public YtDlpInstaller(Logger logger, Path dataFolder, boolean enabled, String configuredPath) {
         this.logger = logger;
@@ -69,10 +63,8 @@ public final class YtDlpInstaller {
         return enabled;
     }
 
-    /**
-     * Returns a runnable yt-dlp command (path or bare "yt-dlp"), downloading the
-     * binary once if needed, or {@code null} if unavailable. Blocking.
-     */
+    // Rend une commande yt-dlp executable (chemin, ou juste "yt-dlp"), en telechargeant le
+    // binaire une fois si besoin, ou null si indispo. BLOQUANT.
     public synchronized String getExecutable() {
         if (!enabled) {
             return null;
@@ -81,28 +73,28 @@ public final class YtDlpInstaller {
             return resolved;
         }
         if (attempted) {
-            return null; // already failed this session; a restart retries
+            return null; // deja rate cette session, un restart retentera
         }
         attempted = true;
 
-        // 1. Configured override.
+        // 1. override configure
         if (!configuredPath.isBlank() && probe(configuredPath)) {
             resolved = configuredPath;
             return resolved;
         }
-        // 2. Already on PATH (admin installed it) — preferred, they maintain it.
+        // 2. deja dans le PATH (l'admin l'a installe) : le meilleur cas, c'est lui qui maintient
         if (probe("yt-dlp")) {
             resolved = "yt-dlp";
             return resolved;
         }
-        // 3. Previously downloaded binary.
+        // 3. binaire deja telecharge avant
         Path local = binDir.resolve(localName());
         if (Files.exists(local) && probe(local.toString())) {
             resolved = local.toString();
             updateAsync(resolved);
             return resolved;
         }
-        // 4. Download it once from GitHub.
+        // 4. on le telecharge une bonne fois depuis GitHub
         if (download(local) && probe(local.toString())) {
             resolved = local.toString();
             logger.info("Downloaded yt-dlp -> " + local);
@@ -113,7 +105,7 @@ public final class YtDlpInstaller {
         return null;
     }
 
-    /** Runs {@code <exe> --version} and returns whether it succeeds. */
+    // lance <exe> --version et dit si ca passe
     private boolean probe(String exe) {
         Process process = null;
         try {
@@ -123,10 +115,10 @@ public final class YtDlpInstaller {
                 process.destroyForcibly();
                 return false;
             }
-            process.getInputStream().readAllBytes(); // drain the short output
+            process.getInputStream().readAllBytes(); // vide la sortie, elle est courte
             return process.exitValue() == 0;
         } catch (IOException e) {
-            return false; // not found / not executable
+            return false; // pas trouve / pas executable
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             if (process != null) {
@@ -175,7 +167,7 @@ public final class YtDlpInstaller {
         }
     }
 
-    /** Self-updates the downloaded binary in the background (best-effort). */
+    // met a jour le binaire telecharge en tache de fond, au mieux
     private void updateAsync(String exe) {
         Thread thread = new Thread(() -> {
             try {
@@ -184,7 +176,7 @@ public final class YtDlpInstaller {
                 p.getInputStream().readAllBytes();
                 p.waitFor(90, TimeUnit.SECONDS);
             } catch (IOException ignored) {
-                // best-effort; a stale binary still works for most videos
+                // tant pis, un binaire un peu vieux marche encore pour la plupart des videos
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -197,22 +189,20 @@ public final class YtDlpInstaller {
         try {
             Files.deleteIfExists(p);
         } catch (IOException ignored) {
-            // best-effort
         }
     }
 
-    /** Local file name for the downloaded binary. */
     private static String localName() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")
                 ? "yt-dlp.exe" : "yt-dlp";
     }
 
-    /** GitHub release asset for the running platform, or null if unsupported. */
+    // asset de release GitHub pour la plateforme courante, null si pas supportee
     private static String assetName() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
         if (os.contains("win")) {
-            return "yt-dlp.exe"; // standalone (bundles Python), x64
+            return "yt-dlp.exe"; // standalone (embarque Python), x64
         }
         if (os.contains("mac") || os.contains("darwin")) {
             return "yt-dlp_macos"; // universal

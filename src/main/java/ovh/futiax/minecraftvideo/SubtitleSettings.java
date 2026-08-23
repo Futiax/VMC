@@ -1,15 +1,12 @@
 package ovh.futiax.minecraftvideo;
 
-/**
- * Subtitle-overlay geometry, set via {@code /video option sub ...} and persisted
- * in config.yml. Read when the screen is built, so a change applies to the next
- * {@code /video play} (like the screen-size / audio options).
- *
- * @param scale          text scale multiplier ({@code subtitle-size})
- * @param heightAboveEdge blocks above the screen's bottom edge ({@code subtitle-height});
- *                        a control bar, if present, adds its own clearance on top
- * @param depthInFront   blocks in front of the screen surface ({@code subtitle-depth};
- *                       0 = on the plane, a small value avoids z-fighting)
- */
+// Geometrie de l'overlay sous-titres, reglee par /video option sub ... et persistee dans
+// config.yml. Lue au build de l'ecran donc un changement s'applique au prochain /video play
+// (comme les options de taille d'ecran et d'audio).
+//   scale            = multiplicateur de taille du texte (subtitle-size)
+//   heightAboveEdge  = blocs au dessus du bord bas de l'ecran (subtitle-height), la control
+//                      bar rajoute son propre degagement par dessus si elle est la
+//   depthInFront     = blocs devant la surface (subtitle-depth), 0 = pile sur le plan,
+//                      une petite valeur evite le z-fighting
 public record SubtitleSettings(float scale, double heightAboveEdge, double depthInFront) {
 }

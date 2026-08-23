@@ -8,28 +8,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Playlist: a FIFO of sources waiting behind the active playback. MAIN-THREAD
- * ONLY (commands and scheduler tasks); the one cross-thread entry point is
- * {@link #scheduleAdvance()}, which hops onto the main thread.
- *
- * <p>Auto-advance: {@link MinecraftVideoPlugin#clearSession} calls
- * {@code scheduleAdvance()} whenever the active session ends — natural EOF,
- * error, {@code /video stop} or {@code /video skip} alike. {@code stop}
- * empties the queue FIRST (so "stop" really stops), while {@code skip} and
- * EOF leave it intact and the next item starts.
- *
- * <p>Queued items reuse the anchor of the session playing when they were
- * added, so the screen stays put across episodes; items queued while idle use
- * the adder's position (same semantics as {@code /video play}). Screen size,
- * fps and audio settings are read from the persisted options when the item
- * STARTS, like a plain {@code /video play} without arguments.
- */
+// File d'attente : un FIFO de sources qui attendent derriere la lecture en cours.
+// MAIN THREAD UNIQUEMENT (commandes + taches du scheduler), le seul point d'entree
+// cross-thread est scheduleAdvance() qui saute sur le main thread.
+//
+// Enchainement auto : MinecraftVideoPlugin.clearSession appelle scheduleAdvance() des que la
+// session active se termine, peu importe la raison (EOF normal, erreur, /video stop, /video
+// skip). "stop" vide la file AVANT de stopper pour que stop stoppe vraiment ; "skip" et l'EOF
+// la laissent intacte et l'item suivant demarre.
+//
+// Un item en file reprend l'ancre de la session qui jouait au moment du add, comme ca l'ecran
+// ne bouge pas entre deux episodes ; un item mis en file a vide prend la position de celui qui
+// l'ajoute (meme semantique que /video play). Taille d'ecran, fps et audio sont lus dans les
+// options persistees au DEMARRAGE de l'item, comme un /video play sans arguments.
 public final class PlaylistManager {
 
-    /** One queued video: what to play, where, and who asked. */
     public record QueueItem(String source, UUID initiatorId, String initiatorName,
-                            Location anchor) {}
+                            Location anchor) {}      // quoi jouer, ou, et qui a demande
 
     private final MinecraftVideoPlugin plugin;
     private final List<QueueItem> queue = new ArrayList<>();
@@ -38,16 +33,16 @@ public final class PlaylistManager {
         this.plugin = plugin;
     }
 
-    /** Appends a source; returns its queue position (1-based). */
+    // ajoute une source, renvoie sa position dans la file (base 1)
     public int add(String source, Player initiator) {
         PlaybackSession active = plugin.getActiveSession();
         Location anchor = active != null ? active.getAnchor()
                 : initiator.getLocation().clone();
         queue.add(new QueueItem(source, initiator.getUniqueId(),
                 initiator.getName(), anchor));
-        // Reference the cache for this queued occurrence: the file survives while
-        // any occurrence is still queued or playing. The reference is transferred
-        // to the session when advance() plays this item (session releases it).
+        // Une reference de cache par occurrence en file : le fichier survit tant qu'une
+        // occurrence est encore en file ou en lecture. La reference est TRANSFEREE a la
+        // session quand advance() joue l'item (c'est la session qui release).
         plugin.getMediaCache().reference(source);
         return queue.size();
     }
@@ -61,24 +56,23 @@ public final class PlaylistManager {
     }
 
     public void clear() {
-        // Release each queued occurrence's cache reference before dropping them.
-        for (QueueItem item : queue) {
+        for (QueueItem item : queue) {      // release avant de tout jeter
             plugin.getMediaCache().release(item.source());
         }
         queue.clear();
     }
 
-    /** Removes the 1-based {@code position}; returns the removed item or null. */
+    // retire la position (base 1), renvoie l'item retire ou null
     public QueueItem remove(int position) {
         if (position < 1 || position > queue.size()) {
             return null;
         }
         QueueItem removed = queue.remove(position - 1);
-        plugin.getMediaCache().release(removed.source()); // occurrence dropped unplayed
+        plugin.getMediaCache().release(removed.source()); // occurrence jetee sans avoir joue
         return removed;
     }
 
-    /** Numbered listing for {@code /video queue list}. */
+    // listing numerote pour /video queue list
     public List<String> describe() {
         List<String> lines = new ArrayList<>(queue.size());
         for (int i = 0; i < queue.size(); i++) {
@@ -94,47 +88,46 @@ public final class PlaylistManager {
                 : "..." + source.substring(source.length() - 57);
     }
 
-    /**
-     * Hops to the main thread and starts the next queued item if nothing is
-     * playing. Safe to call from any thread; no-ops while the plugin disables.
-     */
+    // Saute sur le main thread et lance l'item suivant si rien ne joue.
+    // Appelable depuis n'importe quel thread, no-op pendant le disable du plugin.
     public void scheduleAdvance() {
         if (queue.isEmpty() || !plugin.isEnabled()) {
-            return; // isEmpty is a racy pre-check; advance() re-checks on main
+            return; // isEmpty est un pre-check racy, advance() reverifie sur le main
         }
         try {
             plugin.getServer().getScheduler().runTask(plugin, this::advance);
         } catch (IllegalStateException | IllegalPluginAccessException e) {
-            // Plugin disabling between the check and the schedule; nothing to start.
+            // plugin en train de se desactiver entre le check et le schedule, rien a lancer
         }
     }
 
-    /** Starts the next queued item if idle. Main thread only. */
+    // Demarre l'item suivant si on est idle. Main thread uniquement.
     public void advance() {
         if (queue.isEmpty() || plugin.getActiveSession() != null) {
             return;
         }
-        // remove(0) here transfers this occurrence's cache reference to the
-        // session that will play it (the session releases it when it ends). The
-        // two early-outs below that do NOT start a session release it themselves.
+        // Le remove(0) transfere la reference de cache de cette occurrence a la session qui
+        // va la jouer (la session release en fin de vie). Sortir d'ici sans avoir lance de
+        // session, c'est donc devoir s'occuper de la ref soi-meme : la lacher (mcmm manquant)
+        // ou la laisser suivre l'item qu'on remet en file (course perdue).
         QueueItem item = queue.remove(0);
         String mcmmPath = plugin.resolveMcmmPath();
         String palettePath = plugin.resolvePalettePath();
         if (mcmmPath == null || palettePath == null) {
             plugin.getLogger().warning("Skipping queued video (mcmm or palette missing): "
                     + item.source());
-            plugin.getMediaCache().release(item.source()); // not played: drop its reference
-            advance(); // try the next one
+            plugin.getMediaCache().release(item.source()); // pas joue -> on lache la ref
+            advance(); // au suivant
             return;
         }
-        int width = plugin.getConfig().getInt("default-width", 4);
-        int height = plugin.getConfig().getInt("default-height", 3);
+        int w = plugin.getConfig().getInt("default-width", 4);
+        int h = plugin.getConfig().getInt("default-height", 3);
         int fps = plugin.getConfig().getInt("default-fps", 10);
         PlaybackSession session = new PlaybackSession(plugin, item.initiatorId(),
                 item.initiatorName(), item.anchor().clone(), mcmmPath, palettePath,
-                item.source(), width, height, fps, plugin.buildAudioSettings());
+                item.source(), w, h, fps, plugin.buildAudioSettings());
         if (!plugin.trySetActiveSession(session)) {
-            queue.add(0, item); // lost a race with a manual /video play; keep it queued
+            queue.add(0, item); // perdu la course contre un /video play manuel, on remet en file
             return;
         }
         session.start(plugin.getServer().getOnlinePlayers());

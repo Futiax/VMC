@@ -7,32 +7,29 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 
-/**
- * Extracts the bundled {@code mcmm} binary and the color palette from the
- * plugin jar into the plugin data folder on first start (or after an update),
- * so a fresh install works without the admin placing those files by hand.
- *
- * The native binary is platform-specific: the jar may contain
- * {@code natives/mcmm-<os>-<arch>} (with {@code .exe} on Windows). If none
- * matches the running platform, {@link #getMcmmPath()} returns {@code null} and
- * the admin must build mcmm and point {@code mcmm-path} at it.
- *
- * ffmpeg is NOT bundled (size and (L)GPL redistribution) and must be in PATH.
- */
+// Sort le binaire mcmm et la palette de couleurs du jar vers le dossier du plugin au premier
+// demarrage (ou apres une mise a jour), pour qu'une install fraiche marche sans que l'admin
+// aille poser les fichiers a la main.
+//
+// Le binaire natif depend de la plateforme : le jar peut contenir natives/mcmm-<os>-<arch>
+// (avec .exe sous Windows). Si rien ne matche, getMcmmPath() renvoie null et l'admin doit
+// compiler mcmm lui-meme et pointer mcmm-path dessus.
+//
+// ffmpeg n'est PAS embarque (taille + redistribution (L)GPL), il doit etre dans le PATH.
 public final class NativeInstaller {
 
     private static final String PALETTE_RESOURCE = "vanilla_map_colors.json";
     private static final String VERSION_MARKER = ".installed-version";
 
     private final MinecraftVideoPlugin plugin;
-    private Path mcmmPath;     // null if no bundled binary for this platform
-    private Path palettePath;  // null if the palette resource is missing
+    private Path mcmmPath;     // null si pas de binaire embarque pour cette plateforme
+    private Path palettePath;  // null si la ressource palette manque
 
     public NativeInstaller(MinecraftVideoPlugin plugin) {
         this.plugin = plugin;
     }
 
-    /** Extracts bundled assets if needed. Safe to call once on enable. */
+    // Extrait ce qu'il faut. A appeler une fois a l'enable.
     public void install() {
         Path dataFolder = plugin.getDataFolder().toPath();
         try {
@@ -44,7 +41,6 @@ public final class NativeInstaller {
 
         boolean fresh = needsExtraction(dataFolder);
 
-        // --- Palette (platform-independent) ---
         Path palette = dataFolder.resolve("vanilla_map_colors.json");
         if (extractResource(PALETTE_RESOURCE, palette, fresh, false)) {
             palettePath = palette;
@@ -52,7 +48,6 @@ public final class NativeInstaller {
             palettePath = palette;
         }
 
-        // --- Native mcmm binary (platform-specific) ---
         String resource = mcmmResourceName();
         if (resource == null) {
             plugin.getLogger().warning("Unsupported platform for a bundled mcmm ("
@@ -76,17 +71,15 @@ public final class NativeInstaller {
         }
     }
 
-    /** @return the extracted mcmm path, or {@code null} if none is available. */
-    public Path getMcmmPath() {
+    public Path getMcmmPath() {         // null si rien de dispo
         return mcmmPath;
     }
 
-    /** @return the extracted palette path, or {@code null} if unavailable. */
-    public Path getPalettePath() {
+    public Path getPalettePath() {      // idem
         return palettePath;
     }
 
-    /** Re-extract when the plugin version changed (or on a fresh install). */
+    // On re-extrait quand la version du plugin a change (ou install fraiche).
     private boolean needsExtraction(Path dataFolder) {
         Path marker = dataFolder.resolve(VERSION_MARKER);
         if (!Files.exists(marker)) {
@@ -109,19 +102,15 @@ public final class NativeInstaller {
         }
     }
 
-    /**
-     * Copies a bundled resource to {@code target}. Only overwrites an existing
-     * file when {@code overwrite} is true (i.e. on a fresh install / update).
-     *
-     * @return true if the resource was written this call.
-     */
+    // Copie une ressource du jar vers target. N'ecrase un fichier existant que si overwrite
+    // (donc install fraiche / mise a jour). Renvoie true si on a vraiment ecrit.
     private boolean extractResource(String resource, Path target, boolean overwrite, boolean executable) {
         if (Files.exists(target) && !overwrite) {
             return false;
         }
         try (InputStream in = plugin.getResource(resource)) {
             if (in == null) {
-                return false; // not bundled
+                return false; // pas embarque
             }
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             if (executable) {
@@ -135,7 +124,7 @@ public final class NativeInstaller {
         }
     }
 
-    /** Maps the running platform to the expected jar resource name, or null. */
+    // plateforme courante -> nom de ressource attendu dans le jar, null si on ne sait pas
     private static String mcmmResourceName() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);

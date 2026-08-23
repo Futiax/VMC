@@ -7,35 +7,22 @@ import de.maxhenkel.voicechat.api.BukkitVoicechatService;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/**
- * Main plugin class. Plays videos on virtual in-game map screens.
- *
- * Everything is virtual: fake entity ids, fake map ids, packets only.
- * Nothing is written to the world or to disk.
- *
- * packetevents is used as a separately-installed plugin (declared as a hard
- * dependency in plugin.yml), so it manages its own lifecycle — this plugin
- * never calls setAPI/load/init/terminate, only PacketEvents.getAPI().
- */
+// Classe principale du plugin. Joue des videos sur des ecrans map virtuels en jeu.
+// Tout est virtuel : fake entity ids, fake map ids, paquets uniquement. Rien n'est ecrit
+// dans le monde ni sur le disque (sauf le cache de MediaCache).
+//
+// packetevents est un plugin installe a part (depend dure dans plugin.yml) donc il gere son
+// propre cycle de vie : on n'appelle JAMAIS setAPI/load/init/terminate, seulement getAPI().
 public final class MinecraftVideoPlugin extends JavaPlugin {
 
-    /** Single global playback session for this base version. */
-    private volatile PlaybackSession activeSession;
-
-    /** FIFO of queued sources; auto-advances when the active session ends. */
-    private final PlaylistManager playlist = new PlaylistManager(this);
-
-    /** Local cache for remote sources; null until onEnable reads the config. */
-    private MediaCache mediaCache;
-
-    /** Simple Voice Chat hook; null when SVC is not installed. */
-    private VoicechatHook voicechatHook;
-
-    /** Extracts the bundled mcmm binary + palette on first start. */
+    private volatile PlaybackSession activeSession;     // une seule session a la fois
+    private final PlaylistManager playlist = new PlaylistManager(this);     // FIFO + auto-advance
+    private MediaCache mediaCache;                      // null tant que onEnable n'a pas lu la config
+    private VoicechatHook voicechatHook;                // null si SVC pas installe
     private final NativeInstaller nativeInstaller = new NativeInstaller(this);
-
-    /** Registered control-bar click listener, kept to unregister on disable. */
-    private PacketListenerCommon controlBarListener;
+    private PacketListenerCommon controlBarListener;    // garde pour l'unregister au disable
+    private YtDlpResolver ytDlpResolver;                // partage avec /stream
+    private LiveStream liveStream;                      // non-null pendant un /stream
 
     @Override
     public void onEnable() {
@@ -46,10 +33,12 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 getDataFolder().toPath(),
                 getConfig().getBoolean("youtube-support", true),
                 getConfig().getString("yt-dlp-path", ""));
+        ytDlpResolver = new YtDlpResolver(ytDlpInstaller, getLogger(),
+                getConfig().getString("ffmpeg-path", "ffmpeg"));
         mediaCache = new MediaCache(getLogger(), getDataFolder().toPath(),
                 getConfig().getBoolean("cache-remote-sources", true),
                 getConfig().getInt("cache-max-size-mb", 2048),
-                new YtDlpResolver(ytDlpInstaller, getLogger()));
+                ytDlpResolver);
 
         PluginCommand command = getCommand("video");
         if (command != null) {
@@ -60,18 +49,36 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             getLogger().severe("Command 'video' is missing from plugin.yml!");
         }
 
+        PluginCommand stream = getCommand("stream");
+        if (stream != null) {
+            StreamCommand streamCommand = new StreamCommand(this);
+            stream.setExecutor(streamCommand);
+            stream.setTabCompleter(streamCommand);
+        } else {
+            getLogger().severe("Command 'stream' is missing from plugin.yml!");
+        }
+
         getServer().getPluginManager().registerEvents(new JoinListener(this), this);
 
-        // Control-bar clicks arrive as INTERACT_ENTITY packets aimed at our
-        // fake entity ids. packetevents is initialized by its own plugin (hard
-        // dependency, loaded before us); we only register a listener.
+        // Les clics sur la barre arrivent en paquets INTERACT_ENTITY vises sur nos fake ids.
+        // packetevents s'initialise tout seul (depend dure, charge avant nous), on pose juste
+        // un listener.
         controlBarListener = PacketEvents.getAPI().getEventManager()
                 .registerListener(new ControlBarListener(this), PacketListenerPriority.NORMAL);
+
+        // Les joueurs bougent : on reevalue chaque seconde qui est a portee de l'ecran. Le
+        // scheduler Bukkit annule la tache a onDisable.
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            PlaybackSession session = getActiveSession();
+            if (session != null) {
+                session.refreshViewers(getServer().getOnlinePlayers());
+            }
+        }, 20L, 20L);
 
         registerVoicechat();
     }
 
-    /** Registers this plugin as a Simple Voice Chat addon if SVC is present. */
+    // On s'enregistre comme addon Simple Voice Chat si SVC est la.
     private void registerVoicechat() {
         BukkitVoicechatService service =
                 getServer().getServicesManager().load(BukkitVoicechatService.class);
@@ -84,18 +91,14 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         getLogger().info("Registered as a Simple Voice Chat addon for video audio.");
     }
 
-    /** @return the SVC hook, or {@code null} if SVC is not installed. */
-    public VoicechatHook getVoicechatHook() {
+    public VoicechatHook getVoicechatHook() {       // null si SVC absent
         return voicechatHook;
     }
 
-    /**
-     * Resolves the mcmm path: the configured {@code mcmm-path} if it is set and
-     * usable, else the binary extracted from the jar. A configured path that
-     * points nowhere (e.g. a stale {@code "./mcmm"} from an older config) is
-     * ignored so an outdated config.yml can't break playback. Returns
-     * {@code null} if neither is available.
-     */
+    // Resout le chemin mcmm : le mcmm-path configure s'il est defini ET utilisable, sinon le
+    // binaire extrait du jar. Un chemin configure qui pointe dans le vide (genre un vieux
+    // "./mcmm" d'une config d'avant) est ignore, pour qu'une config.yml perimee ne casse pas
+    // la lecture. null si rien de dispo.
     public String resolveMcmmPath() {
         String configured = getConfig().getString("mcmm-path", "");
         if (configured != null && !configured.isBlank()) {
@@ -103,7 +106,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             boolean looksLikePath = f.isAbsolute()
                     || configured.contains("/") || configured.contains("\\");
             if (!looksLikePath || f.exists()) {
-                return configured; // a bare PATH name, or an existing path
+                return configured; // un nom PATH nu, ou un chemin qui existe
             }
             getLogger().warning("Configured mcmm-path '" + configured
                     + "' does not exist; using the bundled mcmm instead.");
@@ -112,7 +115,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 ? nativeInstaller.getMcmmPath().toString() : null;
     }
 
-    /** Resolves the palette path: configured value if it exists, else the bundled one. */
+    // idem pour la palette : valeur configuree si elle existe, sinon celle du jar
     public String resolvePalettePath() {
         String configured = getConfig().getString("palette-path", "");
         if (configured != null && !configured.isBlank()) {
@@ -130,11 +133,49 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return playlist;
     }
 
+    public YtDlpResolver getYtDlpResolver() {
+        return ytDlpResolver;
+    }
+
+    public boolean isLive() {
+        return liveStream != null;
+    }
+
+    public LiveStream getLiveStream() {
+        return liveStream;
+    }
+
+    // Main thread. Remplace un direct en cours s'il y en a un.
+    public void startLiveStream(LiveStream stream, String mediaUrl) throws java.io.IOException {
+        stopLiveStream(null);
+        stream.start(mediaUrl);
+        liveStream = stream;
+    }
+
+    // Main thread. Coupe le decoupage, vide la file de tranches et arrete la lecture : une
+    // tranche qui joue encore pointe un fichier qu'on vient d'effacer.
+    public void stopLiveStream(String reason) {
+        if (liveStream == null) {
+            return;
+        }
+        LiveStream stream = liveStream;
+        liveStream = null;              // avant le stop : le poll() ne doit pas se rappeler ici
+        playlist.clear();
+        PlaybackSession session = activeSession;
+        if (session != null) {
+            session.stop();
+        }
+        stream.stop();
+        if (reason != null) {
+            getLogger().info("Direct termine: " + reason);
+        }
+    }
+
     public MediaCache getMediaCache() {
         return mediaCache;
     }
 
-    /** Subtitle-overlay geometry snapshot from the current config values. */
+    // snapshots des options config, pris au demarrage d'une lecture
     public SubtitleSettings buildSubtitleSettings() {
         return new SubtitleSettings(
                 (float) getConfig().getDouble("subtitle-size", 1.0),
@@ -142,7 +183,6 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 getConfig().getDouble("subtitle-depth", 0.05));
     }
 
-    /** Audio configuration snapshot from the current config values. */
     public AudioSettings buildAudioSettings() {
         return new AudioSettings(
                 getConfig().getBoolean("audio-enabled", true),
@@ -156,23 +196,24 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Unregister from packetevents first (it outlives us; a stale listener
-        // would keep this instance alive across /reload and act on clicks).
+        // Unregister de packetevents en PREMIER : il nous survit, et un listener perime
+        // garderait cette instance vivante sur un /reload tout en continuant a traiter les clics.
         if (controlBarListener != null) {
             PacketEvents.getAPI().getEventManager().unregisterListener(controlBarListener);
             controlBarListener = null;
         }
-        playlist.clear(); // nothing should auto-start while shutting down
+        stopLiveStream(null);
+        playlist.clear(); // rien ne doit redemarrer tout seul a l'arret
         PlaybackSession session = activeSession;
         if (session != null) {
             session.stop();
-            // Wait for the playback thread to finish so it can't send a packet
-            // after the plugin class loader is closed on disable.
+            // On attend la fin du thread de lecture pour qu'il n'envoie pas un paquet apres
+            // la fermeture du class loader du plugin.
             session.join(2000);
         }
         activeSession = null;
         if (mediaCache != null) {
-            mediaCache.purgeAll(); // remove any cached files on shutdown
+            mediaCache.purgeAll(); // on ne laisse pas trainer les fichiers caches
         }
     }
 
@@ -188,11 +229,9 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return true;
     }
 
-    /**
-     * Called by a session when it ends (EOF, error, /video stop or skip).
-     * The playlist then starts the next queued item, if any — /video stop
-     * empties the queue before stopping, so a plain stop stays stopped.
-     */
+    // Appele par une session quand elle se termine (EOF, erreur, /video stop ou skip). La
+    // playlist enchaine sur l'element suivant s'il y en a un : /video stop vide la file AVANT
+    // d'arreter, donc un stop simple reste arrete.
     public synchronized void clearSession(PlaybackSession session) {
         if (activeSession == session) {
             activeSession = null;

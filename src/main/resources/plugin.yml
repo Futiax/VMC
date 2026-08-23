@@ -13,6 +13,10 @@ commands:
     description: Play a video on a virtual map screen.
     usage: /video option <w> <h> [fps] | /video option audio <mono|stereo|surround> | /video play <url-or-path> [w] [h] [fps] | /video seek <+s|-s|[hh:]mm:ss> | /video subs <list|off|n> | /video stop | pause | resume | status
     permission: minecraftvideo.use
+  stream:
+    description: Play a live stream (Twitch, YouTube live, HLS) on a virtual map screen.
+    usage: /stream <url> | /stream delay <seconds> | /stream stop | /stream status
+    permission: minecraftvideo.use
 
 permissions:
   minecraftvideo.use:

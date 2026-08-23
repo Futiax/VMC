@@ -10,27 +10,26 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * /video option &lt;width&gt; &lt;height&gt; [fps]     — set the persistent screen options
- * /video option audio &lt;mono|stereo|surround&gt; — set the persistent audio mode
- * /video option avsync &lt;ms&gt;                — set the persistent A/V sync delay
- * /video play &lt;url-or-path&gt; [w] [h] [fps]  — play with those options (args override)
- * /video seek &lt;+s|-s|[hh:]mm:ss&gt;           — skip or jump to a timestamp
- * /video subs &lt;list|off|n&gt;                 — embedded subtitle track overlay
- * /video stop | pause | resume | status
- */
+// /video option <width> <height> [fps]      options d'ecran persistees
+// /video option audio <mono|stereo|surround>  mode audio persiste
+// /video option avsync <ms>                 delai de sync A/V persiste
+// /video option dither <on|off>             dithering Floyd-Steinberg
+// /video play <url-ou-chemin> [w] [h] [fps] joue avec ces options (les args priment)
+// /video seek <+s|-s|[hh:]mm:ss>            saute ou va a un timecode
+// /video subs <list|off|n>                  overlay d'une piste de sous-titres embarquee
+// /video stop | pause | resume | status
 public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
             List.of("play", "queue", "skip", "option", "seek", "subs", "stop",
                     "pause", "resume", "status");
 
-    private static final int MAX_DIMENSION = 16; // maps per axis
+    private static final int MAX_DIMENSION = 16; // maps par axe
 
-    // The client applies map-data packets from its network queue once per client
-    // tick (20 TPS), so it can show at most 20 distinct frames/second no matter
-    // how fast we send. Anything above 20 just wastes bandwidth and mcmm CPU.
-    // (Only relevant to raise if the server runs a custom /tick rate.)
+    // Le client applique les paquets map-data de sa file reseau une fois par tick client
+    // (20 TPS), donc il ne peut afficher que 20 images distinctes par seconde quelle que soit
+    // notre vitesse d'envoi. Au dela de 20 on gaspille juste de la bande passante et du CPU
+    // mcmm. (A ne remonter que si le serveur tourne avec un /tick rate custom.)
     private static final int MAX_FPS = 20;
 
     private final MinecraftVideoPlugin plugin;
@@ -79,9 +78,9 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        // Bukkit does NOT strip quotes: `/video play "http://..."` yields a
-        // token that still has the surrounding quotes, which ffmpeg then treats
-        // as a bogus filename. Strip them so quoting the URL is harmless.
+        // Bukkit ne vire PAS les guillemets : /video play "http://..." donne un token qui les
+        // garde, et ffmpeg le prend alors pour un nom de fichier bidon. On les enleve pour que
+        // mettre l'URL entre guillemets soit sans consequence.
         String source = stripSurroundingQuotes(args[1]);
         int width = plugin.getConfig().getInt("default-width", 4);
         int height = plugin.getConfig().getInt("default-height", 3);
@@ -121,8 +120,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("The color palette is missing. Set palette-path in the plugin config.");
             return;
         }
-        // Reference the cache for this direct play (released by the session when
-        // it ends); undo it if we lose the race to become the active session.
+        // Reference de cache pour cette lecture directe (relachee par la session a sa fin) ;
+        // on la defait si on perd la course pour devenir la session active.
         plugin.getMediaCache().reference(source);
         PlaybackSession session = new PlaybackSession(plugin, player,
                 mcmmPath, palettePath, source, width, height, fps,
@@ -132,13 +131,13 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("A video is already playing. Use /" + label + " stop first.");
             return;
         }
-        // Viewers: everyone online right now; late joiners are added by JoinListener.
+        // viewers = tout le monde en ligne maintenant, les late joiners passent par JoinListener
         session.start(plugin.getServer().getOnlinePlayers());
         sender.sendMessage("[MinecraftVideo] Starting " + source
                 + " on a " + width + "x" + height + " screen at " + fps + " fps...");
     }
 
-    /** /video queue [add <src>|list|remove <n>|clear] — manage the playlist. */
+    // /video queue [add <src>|list|remove <n>|clear] : gestion de la file
     private void handleQueue(CommandSender sender, String label, String[] args) {
         PlaylistManager playlist = plugin.getPlaylist();
         String sub = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "list";
@@ -155,7 +154,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 String source = stripSurroundingQuotes(args[2]);
                 int position = playlist.add(source, player);
                 if (plugin.getActiveSession() == null) {
-                    playlist.advance(); // idle: start it right away
+                    playlist.advance(); // rien ne joue : on lance tout de suite
                 } else {
                     sender.sendMessage("[MinecraftVideo] Queued at position " + position
                             + ": " + PlaylistManager.shorten(source));
@@ -201,7 +200,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    /** /video skip — end the current video; the next queued item starts. */
+    // /video skip : termine la video en cours, l'item suivant de la file demarre
     private void handleSkip(CommandSender sender) {
         PlaybackSession session = plugin.getActiveSession();
         if (session == null) {
@@ -209,13 +208,13 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             return;
         }
         boolean hasNext = !plugin.getPlaylist().isEmpty();
-        session.stop(); // clearSession() auto-advances the playlist
+        session.stop(); // clearSession() enchaine la file tout seul
         sender.sendMessage(hasNext
                 ? "[MinecraftVideo] Skipped — starting the next queued video..."
                 : "[MinecraftVideo] Skipped (the queue is empty — stopped).");
     }
 
-    /** Removes a matching pair of surrounding single or double quotes. */
+    // enleve une paire de guillemets (simples ou doubles) qui entoure la chaine
     private static String stripSurroundingQuotes(String s) {
         if (s.length() >= 2) {
             char first = s.charAt(0);
@@ -226,10 +225,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         return s;
     }
 
-    /**
-     * /video option &lt;width&gt; &lt;height&gt; [fps] — set and persist screen options.
-     * /video option audio &lt;mono|stereo&gt; — set and persist the audio mode.
-     */
+    // /video option <width> <height> [fps] : regle et persiste les options d'ecran
+    // /video option audio <mono|stereo>    : regle et persiste le mode audio
     private void handleOption(CommandSender sender, String label, String[] args) {
         if (args.length >= 2 && args[1].equalsIgnoreCase("audio")) {
             handleAudioOption(sender, label, args);
@@ -237,6 +234,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length >= 2 && args[1].equalsIgnoreCase("avsync")) {
             handleAvsyncOption(sender, label, args);
+            return;
+        }
+        if (args.length >= 2 && args[1].equalsIgnoreCase("dither")) {
+            handleDitherOption(sender, label, args);
             return;
         }
         if (args.length >= 2 && (args[1].equalsIgnoreCase("sub")
@@ -255,10 +256,12 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         if (args.length < 3) {
             sender.sendMessage("[MinecraftVideo] Current options: "
                     + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode
-                    + ", avsync " + curAvsync + " ms");
+                    + ", avsync " + curAvsync + " ms, dither "
+                    + (plugin.getConfig().getBoolean("dither", false) ? "on" : "off"));
             sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
             sender.sendMessage("      or: /" + label + " option audio <mono|stereo|surround>");
             sender.sendMessage("      or: /" + label + " option avsync <ms>");
+            sender.sendMessage("      or: /" + label + " option dither <on|off>");
             sender.sendMessage("      or: /" + label + " option sub <size|height|depth> <value>");
             return;
         }
@@ -294,7 +297,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 + " maps @ " + fps + " fps — used by /" + label + " play.");
     }
 
-    /** /video option audio <mono|stereo|surround> — set and persist the audio mode. */
+    // /video option audio <mono|stereo|surround> : regle et persiste le mode audio
     private void handleAudioOption(CommandSender sender, String label, String[] args) {
         String cur = AudioMode.fromConfig(
                 plugin.getConfig().getString("audio-mode", "mono")).configName();
@@ -320,11 +323,36 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 + " Applies to the next /" + label + " play.");
     }
 
-    /**
-     * /video option avsync [ms] — show or set/persist the A/V sync delay
-     * (how much audio content is skipped to compensate the SVC client's
-     * buffering; see config.yml).
-     */
+    // /video option dither [on|off] : affiche ou regle/persiste le dithering Floyd-Steinberg
+    // (mcmm --dither). Moins de banding sur les degrades, mais le bruit de dither change a
+    // chaque image, donc le skip des tuiles inchangees ne sert plus a rien.
+    private void handleDitherOption(CommandSender sender, String label, String[] args) {
+        boolean cur = plugin.getConfig().getBoolean("dither", false);
+        if (args.length < 3) {
+            sender.sendMessage("[MinecraftVideo] Dithering is " + (cur ? "on" : "off") + ".");
+            sender.sendMessage("Set with: /" + label + " option dither <on|off>"
+                    + " — smoother gradients, but more bandwidth.");
+            return;
+        }
+        Boolean on = switch (args[2].toLowerCase(Locale.ROOT)) {
+            case "on", "true" -> true;
+            case "off", "false" -> false;
+            default -> null;
+        };
+        if (on == null) {
+            sender.sendMessage("Dither must be 'on' or 'off'.");
+            return;
+        }
+        plugin.getConfig().set("dither", on);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] Dithering " + (on ? "on" : "off")
+                + (on ? " — smoother gradients; watch /" + label
+                        + " status for dropped frames." : ".")
+                + " Applies to the next /" + label + " play.");
+    }
+
+    // /video option avsync [ms] : affiche ou regle/persiste le delai de sync A/V (combien de
+    // contenu audio est saute pour compenser le buffering du client SVC, cf config.yml)
     private void handleAvsyncOption(CommandSender sender, String label, String[] args) {
         int cur = plugin.getConfig().getInt("av-sync-delay-ms", 200);
         if (args.length < 3) {
@@ -350,10 +378,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 + cur + "). Applies to the next /" + label + " play.");
     }
 
-    /**
-     * /video option sub &lt;size|height|depth&gt; [value] — show or set/persist the
-     * subtitle overlay geometry (see config.yml). Applies to the next play.
-     */
+    // /video option sub <size|height|depth> [valeur] : affiche ou regle/persiste la geometrie
+    // de l'overlay sous-titres (cf config.yml). Prend effet au prochain play.
     private void handleSubOption(CommandSender sender, String label, String[] args) {
         if (args.length < 4) {
             sender.sendMessage("[MinecraftVideo] Subtitles: size "
@@ -377,8 +403,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         String unit;
         switch (key) {
             case "size" -> { configKey = "subtitle-size"; min = 0.1; max = 20.0; unit = "text scale"; }
-            // height/depth are positions: negatives are allowed (below the
-            // bottom edge, or behind the screen plane).
+            // height/depth sont des positions : le negatif est autorise (sous le bord bas,
+            // ou derriere le plan de l'ecran)
             case "height" -> { configKey = "subtitle-height"; min = -20.0; max = 20.0; unit = "blocks above the bottom edge"; }
             case "depth" -> { configKey = "subtitle-depth"; min = -10.0; max = 10.0; unit = "blocks in front of the screen"; }
             default -> {
@@ -396,11 +422,17 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                 + " (" + unit + "). Applies to the next /" + label + " play.");
     }
 
-    /** /video seek <+s|-s|[hh:]mm:ss> — relative skip or absolute jump. */
+    // /video seek <+s|-s|[hh:]mm:ss> : saut relatif ou absolu
     private void handleSeek(CommandSender sender, String label, String[] args) {
         PlaybackSession session = plugin.getActiveSession();
         if (session == null) {
             sender.sendMessage("No video is playing.");
+            return;
+        }
+        // Un direct ne se navigue pas : ce qui joue est une tranche, et les precedentes
+        // sont deja effacees du disque.
+        if (plugin.isLive()) {
+            sender.sendMessage("Cannot seek a live stream.");
             return;
         }
         if (args.length < 2) {
@@ -413,7 +445,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         long targetMillis;
         try {
             if (arg.startsWith("+") || arg.startsWith("-")) {
-                // Relative skip in seconds (sign included).
+                // saut relatif en secondes, signe compris
                 targetMillis = session.getPositionMillis() + Long.parseLong(arg) * 1000L;
             } else {
                 targetMillis = parseTimestampMillis(arg);
@@ -431,15 +463,12 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    /**
-     * /video subs list — list the source's embedded subtitle tracks.
-     * /video subs &lt;n&gt;  — show subtitle track n (as an overlay under the screen).
-     * /video subs off  — hide subtitles.
-     *
-     * <p>{@code list} and {@code <n>} ffprobe the source, which can block for a
-     * URL, so the probe runs off the main thread; the resulting action and chat
-     * feedback are hopped back onto the main thread.
-     */
+    // /video subs list : liste les pistes de sous-titres embarquees de la source
+    // /video subs <n>  : affiche la piste n (en overlay sur le bas de l'ecran)
+    // /video subs off  : coupe les sous-titres
+    //
+    // list et <n> font un ffprobe de la source, qui peut bloquer sur une URL, donc le sondage
+    // part hors main thread ; l'action et le message de retour reviennent sur le main.
     private void handleSubs(CommandSender sender, String label, String[] args) {
         PlaybackSession session = plugin.getActiveSession();
         if (session == null) {
@@ -505,20 +534,17 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         });
     }
 
-    /**
-     * Runs {@code work} on an async thread, then delivers its result to
-     * {@code then} on the main thread — but only if {@code session} is still the
-     * active one (so a probe of the OLD video can't apply to a NEW one that
-     * started meanwhile). Keeps blocking ffprobe off the main thread while the
-     * action and chat feedback stay on it.
-     */
+    // Lance work sur un thread async, puis livre son resultat a then sur le main thread, mais
+    // SEULEMENT si session est toujours la session active (comme ca un sondage de l'ANCIENNE
+    // video ne peut pas s'appliquer a une NOUVELLE qui aurait demarre entre temps). Le ffprobe
+    // bloquant reste hors du main thread, l'action et le message restent dessus.
     private <T> void runAsyncThenSync(PlaybackSession session,
                                       java.util.function.Supplier<T> work,
                                       java.util.function.Consumer<T> then) {
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             T result = work.get();
             if (!plugin.isEnabled()) {
-                return; // plugin disabled while we probed; nothing to deliver
+                return; // plugin desactive pendant le sondage, rien a livrer
             }
             try {
                 plugin.getServer().getScheduler().runTask(plugin, () -> {
@@ -527,12 +553,12 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
                     }
                 });
             } catch (IllegalStateException | org.bukkit.plugin.IllegalPluginAccessException e) {
-                // Disabled between the check and the schedule; the result is moot.
+                // desactive entre le check et le schedule, le resultat ne sert plus a rien
             }
         });
     }
 
-    /** Parses "90", "1:30" or "1:02:03" into millis. */
+    // parse "90", "1:30" ou "1:02:03" en millis
     private static long parseTimestampMillis(String s) {
         String[] parts = s.split(":");
         if (parts.length > 3 || parts.length == 0) {
@@ -550,8 +576,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleStop(CommandSender sender) {
-        // Empty the queue FIRST so clearSession() has nothing to auto-start:
-        // stop means stop, unlike /video skip.
+        // On vide la file D'ABORD pour que clearSession() n'ait rien a relancer :
+        // stop veut dire stop, contrairement a /video skip.
         int dropped = plugin.getPlaylist().size();
         plugin.getPlaylist().clear();
         PlaybackSession session = plugin.getActiveSession();
@@ -609,6 +635,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
         sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
         sender.sendMessage("  /" + label + " option avsync <ms>  — tune the A/V sync delay");
+        sender.sendMessage("  /" + label + " option dither <on|off>  — smoother gradients");
         sender.sendMessage("  /" + label + " option sub <size|height|depth> <value>  — subtitle overlay");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
         sender.sendMessage("  /" + label + " queue [add <src>|list|remove <n>|clear]  — playlist");
@@ -641,11 +668,11 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video option [audio|avsync|sub] — suggest the keywords (width is numeric).
+        // /video option [audio|avsync|sub] : on propose les mots-cles (width est numerique)
         if (args.length == 2 && args[0].equalsIgnoreCase("option")) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
             List<String> matches = new ArrayList<>();
-            for (String v : List.of("audio", "avsync", "sub")) {
+            for (String v : List.of("audio", "avsync", "dither", "sub")) {
                 if (v.startsWith(prefix)) {
                     matches.add(v);
                 }
@@ -678,7 +705,19 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video option avsync <ms> — suggest common values.
+        // /video option dither <on|off>
+        if (args.length == 3 && args[0].equalsIgnoreCase("option")
+                && args[1].equalsIgnoreCase("dither")) {
+            String prefix = args[2].toLowerCase(Locale.ROOT);
+            List<String> matches = new ArrayList<>();
+            for (String v : List.of("on", "off")) {
+                if (v.startsWith(prefix)) {
+                    matches.add(v);
+                }
+            }
+            return matches;
+        }
+        // /video option avsync <ms> : quelques valeurs courantes
         if (args.length == 3 && args[0].equalsIgnoreCase("option")
                 && args[1].equalsIgnoreCase("avsync")) {
             List<String> matches = new ArrayList<>();
@@ -689,7 +728,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video seek <...> — suggest the common skips.
+        // /video seek <...> : les sauts les plus courants
         if (args.length == 2 && args[0].equalsIgnoreCase("seek")) {
             List<String> matches = new ArrayList<>();
             for (String v : List.of("+10", "-10", "0:00")) {
@@ -699,8 +738,8 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
             return matches;
         }
-        // /video subs <list|off|n> — track numbers come from /video subs list
-        // (probing here would block the main thread), so only the keywords.
+        // /video subs <list|off|n> : les numeros de piste viennent de /video subs list (sonder
+        // ici bloquerait le main thread), donc uniquement les mots-cles
         if (args.length == 2 && args[0].equalsIgnoreCase("subs")) {
             String prefix = args[1].toLowerCase(Locale.ROOT);
             List<String> matches = new ArrayList<>();

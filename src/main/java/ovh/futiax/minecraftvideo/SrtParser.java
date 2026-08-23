@@ -5,100 +5,80 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Incremental parser for the SubRip (SRT) text that {@code ffmpeg -f srt}
- * writes. It is fed one line at a time (as ffmpeg's stdout is read) and emits a
- * {@link Cue} whenever a complete block has been seen, so subtitles can be
- * consumed while the source is still being read.
- *
- * <p>An SRT block is:
- * <pre>
- *   1                                  (an optional numeric index)
- *   00:00:20,000 --&gt; 00:00:24,400      (start --&gt; end, optional trailing coords)
- *   First line of text
- *   Second line of text
- *                                      (blank line terminates the block)
- * </pre>
- *
- * <p>Robustness: a UTF-8 BOM on the first line is stripped, CR (from CRLF) is
- * trimmed off every line, the leading index line is optional (some muxers omit
- * it), inline markup ({@code <i> <b> <u> <font ...>} and closing tags) is
- * removed, and SubRip's {@code {\anX}}/{@code {\pos(...)}} ASS-style override
- * braces are dropped. Malformed timestamp lines make the current block be
- * discarded rather than throwing.
- *
- * <p>Not thread-safe; {@link SubtitleStream} drives it from its single reader
- * thread and copies out immutable {@link Cue}s.
- */
+// Parseur incremental du SubRip (SRT) que sort "ffmpeg -f srt". On le nourrit ligne par
+// ligne au fil de la lecture de stdout et il rend une Cue des qu'un bloc est complet,
+// comme ca on peut consommer les sous-titres pendant que la source se lit encore.
+//
+// Un bloc SRT c'est :
+//   1                                   <- index numerique, optionnel
+//   00:00:20,000 --> 00:00:24,400       <- debut --> fin (+ coords en fin de ligne parfois)
+//   Premiere ligne de texte
+//   Deuxieme ligne de texte
+//                                       <- ligne vide = fin du bloc
+//
+// Robustesse : BOM UTF-8 vire sur la premiere ligne, CR du CRLF coupe sur toutes, ligne
+// d'index optionnelle (des muxers l'omettent), balises inline (<i> <b> <u> <font ...>)
+// retirees, et les accolades d'override ASS ({\anX}, {\pos(...)}) degagees. Un timecode
+// malforme fait jeter le bloc en cours au lieu de tout faire peter.
+//
+// Pas thread-safe : SubtitleStream le pilote depuis son unique thread de lecture et
+// ressort des Cue immuables.
 public final class SrtParser {
 
-    /** One subtitle cue: [startMillis, endMillis) of stream-local time + text. */
-    public record Cue(long startMillis, long endMillis, String text) {}
+    public record Cue(long startMillis, long endMillis, String text) {}     // [start, end) en temps stream
 
-    /** hh:mm:ss,mmm --> hh:mm:ss,mmm (comma or dot for the millis separator). */
+    // hh:mm:ss,mmm --> hh:mm:ss,mmm (virgule ou point pour les millis)
     private static final Pattern TIMECODE = Pattern.compile(
             "(\\d{1,2}):(\\d{2}):(\\d{2})[,.](\\d{1,3})\\s*-->\\s*"
                     + "(\\d{1,2}):(\\d{2}):(\\d{2})[,.](\\d{1,3})");
-    /** Inline HTML-ish tags SRT allows: <i> </i> <b> <font color=...> etc. */
-    private static final Pattern TAGS = Pattern.compile("</?[a-zA-Z][^>]*>");
-    /** ASS/SSA override blocks that leak into SRT, e.g. {\an8} or {\pos(1,2)}. */
-    private static final Pattern OVERRIDE_BRACES = Pattern.compile("\\{[^}]*}");
+    private static final Pattern TAGS = Pattern.compile("</?[a-zA-Z][^>]*>");    // <i> </i> <b> <font color=...>
+    private static final Pattern OVERRIDE_BRACES = Pattern.compile("\\{[^}]*}"); // {\an8}, {\pos(1,2)}...
 
     private boolean bomStripped = false;
     private long pendingStart = -1;
     private long pendingEnd = -1;
     private final List<String> pendingText = new ArrayList<>();
 
-    /**
-     * Feeds one raw line (without its line terminator). Returns a completed
-     * {@link Cue} when this line closes a block (a blank line), otherwise
-     * {@code null}. Call {@link #flush()} at end of stream to emit a trailing
-     * block that was not terminated by a blank line.
-     */
+    // Avale une ligne brute (sans son terminateur). Rend une Cue quand la ligne ferme un
+    // bloc (ligne vide), null sinon. Appeler flush() en fin de stream pour sortir un
+    // dernier bloc qui n'aurait pas eu sa ligne vide.
     public Cue accept(String rawLine) {
         String line = rawLine;
         if (!bomStripped) {
-            // Strip a UTF-8 BOM that ffmpeg may put on the very first byte.
-            if (!line.isEmpty() && line.charAt(0) == '﻿') {
+            if (!line.isEmpty() && line.charAt(0) == '﻿') {     // BOM UTF-8 que ffmpeg colle parfois
                 line = line.substring(1);
             }
             bomStripped = true;
         }
-        // Trim a trailing CR from CRLF line endings.
-        if (!line.isEmpty() && line.charAt(line.length() - 1) == '\r') {
+        if (!line.isEmpty() && line.charAt(line.length() - 1) == '\r') {     // CRLF
             line = line.substring(0, line.length() - 1);
         }
 
         if (line.isBlank()) {
-            return flush(); // blank line: end of the current block
+            return flush(); // ligne vide = fin du bloc courant
         }
 
-        // Only treat a timecode line as the START of a new cue when no cue is
-        // currently accumulating its timecodes (pendingStart < 0). Once a cue's
-        // timecodes are pending, blocks are separated by a blank line, so a line
-        // that merely CONTAINS a timecode-looking substring (a subtitle quoting
-        // "00:00:01,000 --> 00:00:02,000", or a garbage track) is that cue's
-        // text — not a new header. find() over the whole line would otherwise
-        // silently drop the real cue by clearing its text and timecodes.
+        // On ne prend une ligne de timecode pour un DEBUT de cue que si aucune cue n'est en
+        // train d'accumuler (pendingStart < 0). Une fois les timecodes poses, les blocs sont
+        // separes par une ligne vide, donc une ligne qui CONTIENT juste un truc qui ressemble
+        // a un timecode (un sous-titre qui cite "00:00:01,000 --> 00:00:02,000", ou une piste
+        // pourrie) c'est du texte de la cue, pas un nouvel en-tete. Sans ce garde, le find()
+        // sur toute la ligne dropait silencieusement la vraie cue en clearant texte + timecodes.
         if (pendingStart < 0) {
             Matcher m = TIMECODE.matcher(line);
             if (m.find()) {
-                // A timecode line starts a cue; the (optional) index line before
-                // it was ignored because no timecode was pending, so any prior
-                // stray text is dropped by resetting the block.
+                // La ligne de timecode ouvre la cue. La ligne d'index (optionnelle) juste
+                // avant a ete ignoree faute de timecode en attente, donc on repart propre.
                 pendingText.clear();
                 pendingStart = toMillis(m.group(1), m.group(2), m.group(3), m.group(4));
                 pendingEnd = toMillis(m.group(5), m.group(6), m.group(7), m.group(8));
                 return null;
             }
-            // No timecode pending and this isn't one: a leading index line (or
-            // stray text before the first cue); drop it.
-            return null;
+            return null;    // ligne d'index, ou texte parasite avant la 1re cue -> poubelle
         }
 
-        // A cue's timecodes are pending: everything up to the next blank line is
-        // its text (this also naturally skipped the leading numeric index line,
-        // which arrived while pendingStart was still < 0).
+        // Timecodes en attente : tout jusqu'a la prochaine ligne vide est le texte de la cue
+        // (ce qui a saute au passage la ligne d'index, arrivee quand pendingStart etait < 0).
         String cleaned = clean(line);
         if (!cleaned.isEmpty()) {
             pendingText.add(cleaned);
@@ -106,11 +86,8 @@ public final class SrtParser {
         return null;
     }
 
-    /**
-     * Emits the block accumulated so far (if it has a valid timecode and text)
-     * and resets for the next one. Call at EOF to flush a final unterminated
-     * block. Returns {@code null} when there is nothing to emit.
-     */
+    // Sort le bloc accumule (s'il a un timecode valide ET du texte) et repart a zero.
+    // A appeler en EOF pour vider un dernier bloc non termine. null si rien a sortir.
     public Cue flush() {
         Cue cue = null;
         if (pendingStart >= 0 && pendingEnd > pendingStart && !pendingText.isEmpty()) {
@@ -122,7 +99,6 @@ public final class SrtParser {
         return cue;
     }
 
-    /** Removes inline markup and ASS override braces from one text line. */
     private static String clean(String line) {
         String s = OVERRIDE_BRACES.matcher(line).replaceAll("");
         s = TAGS.matcher(s).replaceAll("");
@@ -130,8 +106,8 @@ public final class SrtParser {
     }
 
     private static long toMillis(String h, String m, String s, String millis) {
-        // millis may be 1-3 digits; right-pad to exactly 3 (SubRip uses 3, but
-        // some muxers emit fewer, e.g. "20,5" meaning 500 ms).
+        // millis fait 1 a 3 chiffres : on complete a droite jusqu'a 3. SubRip en met 3 mais
+        // des muxers en sortent moins, genre "20,5" qui veut dire 500 ms.
         String ms = (millis + "000").substring(0, 3);
         return (Long.parseLong(h) * 3600L + Long.parseLong(m) * 60L + Long.parseLong(s)) * 1000L
                 + Long.parseLong(ms);

@@ -20,44 +20,38 @@ import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
-/**
- * Downloads remote (http/https) sources to a local file once, so every pipeline
- * of a playback — mcmm video, ffmpeg audio, ffprobe, ffmpeg subtitles — reads
- * the LOCAL file instead of each opening its own connection to the origin. That
- * removes the concurrent-connection load that makes rate-limiting hosts (e.g.
- * archive.org) answer 5XX, and means a seek or a subtitle toggle never
- * re-fetches.
- *
- * <p><b>Reference counting.</b> {@link #reference} is called once per live
- * occurrence of a URL (each queue entry, plus the play about to start), and
- * {@link #release} when that occurrence ends. The file is downloaded on the
- * first {@link #acquire} and deleted only when the LAST reference is released —
- * so the same URL queued N times downloads once and survives until its final
- * playback ends.
- *
- * <p><b>Hard size cap.</b> A remote source whose size exceeds
- * {@code cache-max-size-mb} is refused (not streamed): {@link #acquire} throws.
- *
- * <p>Local file paths are never cached (already local): every method is a
- * passthrough no-op for them, and {@link #acquire} returns the path unchanged.
- *
- * <p>NOTE: this is the only part of the plugin that writes to disk. Files live
- * under {@code <dataFolder>/cache} and are removed on release, on enable
- * (orphans left by a crash) and on disable. Thread-safety: {@link #reference}/
- * {@link #release} take the monitor briefly; {@link #acquire} downloads OUTSIDE
- * the monitor (so a long download never blocks the main thread doing queue ops)
- * and only re-takes it to publish the file.
- */
+// Telecharge une fois les sources distantes (http/https) dans un fichier local, pour que tous
+// les pipelines d'une lecture - mcmm video, ffmpeg audio, ffprobe, ffmpeg sous-titres - lisent
+// le fichier LOCAL au lieu d'ouvrir chacun sa connexion vers l'origine. Ca supprime la charge
+// de connexions concurrentes qui fait repondre 5XX aux hotes qui rate-limitent (archive.org
+// typiquement), et un seek ou un toggle de sous-titres ne re-telecharge plus rien.
+//
+// COMPTAGE DE REFERENCES. reference() est appele une fois par occurrence vivante d'une URL
+// (chaque entree en file, plus la lecture qui demarre), release() quand cette occurrence se
+// termine. Le fichier est telecharge au premier acquire() et supprime seulement quand la
+// DERNIERE reference est relachee : la meme URL mise N fois en file se telecharge une fois et
+// survit jusqu'a la fin de sa derniere lecture.
+//
+// CAP DE TAILLE DUR. Une source distante plus grosse que cache-max-size-mb est REFUSEE (pas
+// streamee) : acquire() leve.
+//
+// Les chemins locaux ne sont jamais caches (deja locaux) : toutes les methodes sont des no-op
+// pour eux et acquire() rend le chemin tel quel.
+//
+// NOTE : c'est la seule partie du plugin qui ecrit sur le disque. Les fichiers vivent dans
+// <dataFolder>/cache et sont vires au release, a l'enable (orphelins laisses par un crash) et
+// au disable. Thread-safety : reference()/release() prennent le moniteur brievement ;
+// acquire() telecharge EN DEHORS du moniteur (donc un gros download ne bloque jamais le main
+// thread qui manipule la file) et ne le reprend que pour publier le fichier.
 public final class MediaCache {
 
     private final Logger logger;
     private final Path cacheDir;
     private final boolean enabled;
     private final long maxBytes;
-    /** Resolves page URLs (YouTube etc.) to a stream URL; null = disabled. */
-    private final YtDlpResolver resolver;
+    private final YtDlpResolver resolver;   // resout les URLs de page (YouTube...), null = desactive
 
-    /** One cached URL: the local file (null until downloaded) and its refcount. */
+    // une URL cachee : le fichier local (null tant que pas telecharge) et son compteur
     private static final class Entry {
         Path file;
         int refs;
@@ -65,8 +59,7 @@ public final class MediaCache {
 
     private final Map<String, Entry> entries = new HashMap<>();
 
-    /** Redirects are followed MANUALLY so each hop's host is re-validated (below). */
-    private static final int MAX_REDIRECTS = 5;
+    private static final int MAX_REDIRECTS = 5;     // suivis A LA MAIN, cf fetch()
 
     private final HttpClient http = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
@@ -81,11 +74,10 @@ public final class MediaCache {
         this.maxBytes = Math.max(0L, (long) maxSizeMb) * 1024L * 1024L;
         this.resolver = resolver;
         if (enabled) {
-            purgeDir(); // clear orphans left by a previous crash/stop
+            purgeDir(); // orphelins laisses par un crash / un arret precedent
         }
     }
 
-    /** Whether {@code source} is a remote URL this cache handles. */
     public boolean isCacheable(String source) {
         if (!enabled || source == null) {
             return false;
@@ -94,7 +86,7 @@ public final class MediaCache {
         return s.startsWith("http://") || s.startsWith("https://");
     }
 
-    /** Registers one live occurrence of {@code source}. No-op for local paths. */
+    // enregistre une occurrence vivante de source. No-op pour un chemin local.
     public synchronized void reference(String source) {
         if (!isCacheable(source)) {
             return;
@@ -102,10 +94,8 @@ public final class MediaCache {
         entries.computeIfAbsent(source, k -> new Entry()).refs++;
     }
 
-    /**
-     * Releases one occurrence of {@code source}; deletes the file once the last
-     * reference is gone. No-op for local paths or an unknown source.
-     */
+    // Relache une occurrence ; supprime le fichier une fois la derniere reference partie.
+    // No-op pour un chemin local ou une source inconnue.
     public synchronized void release(String source) {
         if (!isCacheable(source)) {
             return;
@@ -126,40 +116,36 @@ public final class MediaCache {
         }
     }
 
-    /**
-     * Returns a local path to read for {@code source}, downloading it first if it
-     * is a not-yet-cached remote URL. For a local path the source is returned
-     * unchanged. Blocking (the download); call it off the main thread.
-     *
-     * <p>A reference for this occurrence MUST already be held (see
-     * {@link #reference}) so the file cannot be evicted mid-download.
-     *
-     * @param abort polled during the download; if it turns true the download is
-     *              aborted (used to stop a download when the session is stopped)
-     * @throws IOException if the source exceeds the size cap, the download fails,
-     *                     or it was aborted
-     */
+    // Rend un chemin local a lire pour source, en le telechargeant d'abord si c'est une URL
+    // distante pas encore cachee. Pour un chemin local, la source est rendue telle quelle.
+    // BLOQUANT (le download), a appeler hors main thread.
+    //
+    // Une reference pour cette occurrence DOIT deja etre prise (cf reference()), sinon le
+    // fichier peut se faire evincer en plein telechargement.
+    //
+    // abort est teste pendant le download ; s'il passe a true, le download est avorte (sert a
+    // couper quand la session est stoppee). Leve une IOException si la source depasse le cap,
+    // si le download echoue, ou s'il a ete avorte.
     public String acquire(String source, BooleanSupplier abort) throws IOException {
         if (!isCacheable(source)) {
-            return source; // local path: read it directly
+            return source; // chemin local : on lit directement
         }
         synchronized (this) {
             Entry e = entries.get(source);
             if (e != null && e.file != null) {
-                return e.file.toString(); // already downloaded (e.g. queued twice)
+                return e.file.toString(); // deja telecharge (mise en file deux fois par ex)
             }
         }
-        // Download outside the lock so queue ops on the main thread never block.
+        // Download hors du lock pour que les operations de file sur le main thread ne bloquent jamais.
         Path file = download(source, abort);
         synchronized (this) {
             Entry e = entries.get(source);
             if (e == null) {
-                // Every reference was released while we downloaded (should not
-                // happen: the caller holds one). Don't leak the file.
+                // Toutes les references ont ete relachees pendant qu'on telechargeait (ne
+                // devrait pas arriver, l'appelant en tient une). On ne laisse pas fuiter le fichier.
                 try {
                     Files.deleteIfExists(file);
                 } catch (IOException ignored) {
-                    // best-effort
                 }
                 throw new IOException("source no longer referenced");
             }
@@ -177,12 +163,23 @@ public final class MediaCache {
         Path target = cacheDir.resolve(cacheName(source));
         Path tmp = cacheDir.resolve(cacheName(source) + ".part");
 
-        // Resolve a page URL (YouTube etc.) to a direct stream via yt-dlp; a
-        // direct media URL passes straight through. The cache key stays the
-        // ORIGINAL source (stable across re-plays), only the fetched URL differs.
-        String fetchUrl = resolver != null ? resolver.resolve(source) : source;
-        HttpResponse<InputStream> response = fetch(fetchUrl);
-        // Reject early on an advertised size over the cap.
+        // Une URL de page (YouTube etc.) est telechargee PAR yt-dlp : ces urls CDN signees ne
+        // repondent qu'a la forme exacte de requete qu'il a negociee (un GET tout simple se
+        // prend un 403, cf YtDlpResolver). Les URLs media directes gardent notre propre chemin
+        // HTTP en dessous. Dans les deux cas la cle de cache reste la source D'ORIGINE.
+        if (resolver != null && resolver.handles(source)) {
+            assertPublicHost(source); // SSRF : l'URL de page elle-meme doit etre publique
+            Path produced;
+            try {
+                produced = resolver.download(source, tmp, maxBytes, abort);
+            } catch (IOException e) {
+                deleteQuietly(tmp); // yt-dlp a pu laisser un fichier partiel
+                throw e;
+            }
+            return publish(produced, target, source);
+        }
+        HttpResponse<InputStream> response = fetch(source);
+        // refus immediat si la taille annoncee depasse le cap
         long advertised = response.headers().firstValueAsLong("content-length").orElse(-1L);
         if (maxBytes > 0 && advertised > maxBytes) {
             response.body().close();
@@ -210,21 +207,24 @@ public final class MediaCache {
             deleteQuietly(tmp);
             throw e;
         }
+        return publish(tmp, target, source);
+    }
+
+    private Path publish(Path downloaded, Path target, String source) throws IOException {
         try {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(downloaded, target, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            deleteQuietly(tmp);
+            deleteQuietly(downloaded);
             throw new IOException("could not finalize cache file: " + e.getMessage());
         }
-        logger.info("Cached " + source + " -> " + target + " (" + (total / (1024 * 1024)) + " MB)");
+        logger.info("Cached " + source + " -> " + target
+                + " (" + (Files.size(target) / (1024 * 1024)) + " MB)");
         return target;
     }
 
-    /**
-     * Issues the GET, following redirects MANUALLY so every hop's host is
-     * re-validated against {@link #assertPublicHost} (SSRF guard). Returns the
-     * 200 response with an open body; the caller consumes and closes it.
-     */
+    // Fait le GET en suivant les redirects A LA MAIN, pour revalider l'hote de chaque saut
+    // avec assertPublicHost (garde SSRF). Rend la reponse 200 avec son body ouvert :
+    // c'est a l'appelant de le consommer et de le fermer.
     private HttpResponse<InputStream> fetch(String source) throws IOException {
         URI uri = assertPublicHost(source);
         for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -251,9 +251,9 @@ public final class MediaCache {
                 if (location == null) {
                     throw new IOException("redirect with no Location for " + source);
                 }
-                // Resolve relative redirects against the current hop, then
-                // re-validate the new host: a public origin must not be able to
-                // bounce us onto an internal address.
+                // On resout les redirects relatifs contre le saut courant, puis on revalide le
+                // nouvel hote : une origine publique ne doit pas pouvoir nous renvoyer sur une
+                // adresse interne.
                 uri = assertPublicHost(uri.resolve(location).toString());
                 continue;
             }
@@ -263,14 +263,12 @@ public final class MediaCache {
         throw new IOException("too many redirects for " + source);
     }
 
-    /**
-     * Parses {@code url}, requires an http/https scheme, and refuses it if ANY
-     * resolved IP is non-public (loopback, link-local incl. 169.254 cloud
-     * metadata, private/site-local, CGNAT, IPv6 ULA, wildcard, multicast). This
-     * is the SSRF guard: it stops a caller from making the server reach internal
-     * services or a cloud metadata endpoint. (Residual DNS-rebind between this
-     * check and the actual connect is out of scope for this threat model.)
-     */
+    // Parse l'url, exige un scheme http/https, et la refuse si N'IMPORTE LAQUELLE des IPs
+    // resolues n'est pas publique (loopback, link-local dont le 169.254 des metadonnees cloud,
+    // prive/site-local, CGNAT, ULA IPv6, wildcard, multicast). C'est la garde SSRF : elle
+    // empeche un appelant de faire taper le serveur sur des services internes ou sur un
+    // endpoint de metadonnees cloud. (Le DNS-rebinding residuel entre ce check et la connexion
+    // reelle est hors modele de menace ici.)
     private static URI assertPublicHost(String url) throws IOException {
         URI uri;
         try {
@@ -301,7 +299,7 @@ public final class MediaCache {
         return uri;
     }
 
-    /** True for any address that must not be reachable via a user-supplied URL. */
+    // true pour toute adresse qui ne doit pas etre joignable via une URL fournie par un joueur
     private static boolean isNonPublic(InetAddress a) {
         if (a.isLoopbackAddress() || a.isAnyLocalAddress() || a.isLinkLocalAddress()
                 || a.isSiteLocalAddress() || a.isMulticastAddress()) {
@@ -319,7 +317,7 @@ public final class MediaCache {
         } else if (b.length == 16) {
             int first = b[0] & 0xFF;
             if (first == 0xFC || first == 0xFD) {
-                return true; // fc00::/7 IPv6 unique-local (not covered by isSiteLocal)
+                return true; // fc00::/7 unique-local IPv6, pas couvert par isSiteLocal
             }
         }
         return false;
@@ -329,7 +327,7 @@ public final class MediaCache {
         return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
     }
 
-    /** Deletes every cached file (called on enable for orphans and on disable). */
+    // vide tout le cache (appele a l'enable pour les orphelins, et au disable)
     public synchronized void purgeAll() {
         entries.clear();
         purgeDir();
@@ -352,11 +350,10 @@ public final class MediaCache {
         try {
             Files.deleteIfExists(p);
         } catch (IOException ignored) {
-            // best-effort
         }
     }
 
-    /** A collision-free, filesystem-safe file name: sha-256(url) + guessed ext. */
+    // nom de fichier sans collision et safe pour le FS : sha-256(url) + extension devinee
     private static String cacheName(String source) {
         String hash;
         try {
@@ -369,13 +366,13 @@ public final class MediaCache {
             }
             hash = sb.toString();
         } catch (java.security.NoSuchAlgorithmException e) {
-            hash = Integer.toHexString(source.hashCode()); // SHA-256 is always present
+            hash = Integer.toHexString(source.hashCode()); // SHA-256 est toujours la, ceinture-bretelles
         }
         String ext = guessExtension(source);
         return ext.isEmpty() ? hash : hash + "." + ext;
     }
 
-    /** Best-effort extension from the URL path (ffmpeg probes content anyway). */
+    // extension devinee depuis le chemin de l'URL, au mieux (ffmpeg sonde le contenu de toute facon)
     private static String guessExtension(String source) {
         String path = source;
         int q = path.indexOf('?');

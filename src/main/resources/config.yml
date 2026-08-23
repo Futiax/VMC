@@ -15,11 +15,28 @@ default-width: 4
 default-height: 3
 default-fps: 10
 
+# Floyd-Steinberg dithering (passed to mcmm as --dither). The map palette has
+# ~250 colours, so flat gradients (skies, fades) band visibly; dithering trades
+# that banding for fine noise and lands much closer to the source.
+# COST: the noise changes every frame, so "only resend the tiles that changed"
+# stops helping and bandwidth goes back to a full frame every time. If
+# /video status starts reporting dropped frames, turn this off (or lower the
+# screen size / fps). Applies to the next /video play.
+dither: false
+
 # Clickable control bar floating under the screen (packet-only entities, like
 # the screen itself): rewind 10s / play-pause / forward 10s / skip to the next
 # queued video. Only players with the minecraftvideo.use permission can click
 # the buttons; everyone sees them. Applies to the next /video play.
 control-bar-enabled: true
+
+# How far a player can be from the screen and still be sent the video, in blocks. A screen
+# costs its full bandwidth PER viewer (a 5x3 screen at 20 fps is roughly 30 Mbit/s each), so
+# streaming to someone mining 5000 blocks away — or standing in another world — is pure waste.
+# Players walking in or out of range are picked up within a second, and someone coming back
+# gets a complete frame, never a half-updated one.
+# Set to 0 to send to every player in the screen's world, whatever the distance.
+viewer-range-blocks: 64
 
 # --- Subtitle overlay geometry (also settable in-game: /video option sub ...) ---
 #   size   = text scale (bigger = larger glyphs)
@@ -52,11 +69,12 @@ cache-max-size-mb: 2048
 
 # --- YouTube (and 1000+ other sites) support, via yt-dlp ---
 # When enabled, an http(s) source that is NOT a direct media file (a YouTube
-# watch page, etc.) is resolved to a directly-playable stream URL with yt-dlp.
-# A low-res COMBINED format (video+audio in one url) is picked, which is exactly
-# right for 128px map screens. Requires the remote-source cache above to be on
-# (default): the resolved url is downloaded once, which also sidesteps its ~6h
-# expiry. Direct media URLs and local paths ignore yt-dlp entirely.
+# watch page, etc.) is DOWNLOADED by yt-dlp itself (a low-res <=480p stream,
+# exactly right for 128px map screens; video and audio are merged with the
+# ffmpeg configured below). yt-dlp must do the fetching: the signed CDN urls it
+# resolves only answer to the exact request it negotiated. Requires the
+# remote-source cache above to be on (default). Direct media URLs and local
+# paths ignore yt-dlp entirely.
 #
 # yt-dlp is NOT bundled (it is ~30 MB per platform and its extractors break
 # often). Instead the plugin finds it in this order and, only if needed,
@@ -70,6 +88,24 @@ youtube-support: true
 # Explicit path to a yt-dlp executable. Leave EMPTY to auto-detect / auto-download
 # as described above. Set it to use a specific build (or a PATH name like "yt-dlp").
 yt-dlp-path: ""
+
+# --- Live streams (/stream) ---
+# A live source cannot be played directly: the video converter and the audio ffmpeg open two
+# INDEPENDENT connections, and on a live stream they join at different segments — a permanent
+# audio/video offset of random size. So a live stream is RECORDED into slices of finished local
+# files, which then play back exactly like ordinary videos, perfectly in sync.
+#
+# The slice length is the whole trade-off, both ways at once:
+#   longer  = further behind the live edge (at least one slice), but fewer seams
+#   shorter = closer to live, but every slice change costs a screen restart (about a second of
+#             frozen picture), so short slices stutter constantly
+# 30 is a sane starting point. Below ~15 the stutter dominates.
+stream-segment-seconds: 30
+
+# How many slices may wait in line before the oldest are dropped. A live stream waits for
+# nobody: if the server cannot render in real time the backlog grows forever and you end up
+# watching the past. Dropping re-syncs to the live edge, like any streaming player does.
+stream-max-backlog: 3
 
 # --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
 # When enabled, the video's audio is streamed into a spatialised Simple Voice

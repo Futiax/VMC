@@ -9,38 +9,36 @@ import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientIn
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.IllegalPluginAccessException;
 
+import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/**
- * packetevents listener that turns clicks on {@link ControlBar} buttons into
- * playback actions: ⏪ seek -10 s, ⏯ pause/resume, ⏩ seek +10 s, ⏭ skip.
- *
- * <p>Runs on the clicking client's netty thread. The packet-side work is kept
- * Bukkit-free (fake-id filter, packet dedup, per-player debounce — the player
- * identity comes from packetevents' own User); the click is then settled in
- * ONE main-thread task, because the permission check and the chat feedback
- * are Bukkit API. The session operations themselves (pause/resume/seek/stop)
- * are thread-safe either way — /video already runs them on the main thread —
- * so the hop costs at most one tick, imperceptible for a button.
- *
- * <p>One physical click can yield several INTERACT_ENTITY packets: a right
- * click sends INTERACT_AT + INTERACT (and the client may retry with the off
- * hand), a left click sends a single ATTACK. Only main-hand INTERACT and
- * ATTACK are acted on; the 250 ms debounce absorbs double-clicks on top.
- * Every packet aimed at ANY fake id (a bar button OR a screen frame, from the
- * current session or one that ended a tick ago) is cancelled regardless — the
- * ids do not exist server-side, so the vanilla server must never see them.
- */
+// Listener packetevents qui transforme les clics sur les boutons de la ControlBar en actions
+// de lecture : ⏪ seek -10 s, ⏯ pause/resume, ⏩ seek +10 s, ⏭ skip.
+//
+// Ca tourne sur le thread netty du client qui clique. Tout le boulot cote paquet reste SANS
+// Bukkit (filtre d'id fake, dedup de paquets, debounce par joueur, l'identite vient du User
+// de packetevents) ; le clic est ensuite regle dans UNE seule tache main thread parce que le
+// check de permission et le message de retour sont de l'API Bukkit. Les operations de session
+// (pause/resume/seek/stop) sont thread-safe de toute facon (/video les fait deja depuis le
+// main), donc le saut coute au pire un tick, invisible pour un bouton.
+//
+// Un seul clic physique peut sortir plusieurs INTERACT_ENTITY : un clic droit envoie
+// INTERACT_AT + INTERACT (et le client peut retenter avec la main gauche), un clic gauche
+// envoie un seul ATTACK. On n'agit que sur INTERACT main principale et ATTACK ; le debounce
+// de 250 ms absorbe les double-clics par dessus. Tout paquet vise sur N'IMPORTE QUEL id fake
+// (bouton de barre OU frame d'ecran, session courante ou finie il y a un tick) est annule
+// quoi qu'il arrive : ces ids n'existent pas cote serveur, le serveur vanilla ne doit jamais
+// les voir.
 public final class ControlBarListener implements PacketListener {
 
-    private static final long DEBOUNCE_NANOS = 250_000_000L; // per player
-    private static final long SEEK_STEP_MILLIS = 10_000L;    // ⏪ / ⏩ step
+    private static final long DEBOUNCE_NANOS = 250_000_000L; // par joueur
+    private static final long SEEK_STEP_MILLIS = 10_000L;    // pas des ⏪ / ⏩
     private static final String PERMISSION = "minecraftvideo.use";
 
     private final MinecraftVideoPlugin plugin;
-    /** Last accepted click per player (System.nanoTime), from netty threads. */
+    // dernier clic accepte par joueur (System.nanoTime), ecrit depuis les threads netty
     private final ConcurrentMap<UUID, Long> lastClickNanos = new ConcurrentHashMap<>();
 
     public ControlBarListener(MinecraftVideoPlugin plugin) {
@@ -55,29 +53,37 @@ public final class ControlBarListener implements PacketListener {
         WrapperPlayClientInteractEntity packet = new WrapperPlayClientInteractEntity(event);
         int entityId = packet.getEntityId();
         if (entityId < VirtualScreen.FAKE_ID_BASE) {
-            return; // a real entity: none of our business (fast path)
+            return; // vraie entite, pas nos oignons (fast path)
         }
-        // Any fake id (screen frame OR bar button, current session or a just
-        // ended one) does not exist server-side: cancel BEFORE the session
-        // lookup so a click that lands a tick after the session swapped/stopped
-        // is still swallowed instead of leaking to the vanilla server.
+        // N'importe quel id fake (frame d'ecran OU bouton, session courante ou qui vient de
+        // finir) n'existe pas cote serveur : on annule AVANT le lookup de session, comme ca
+        // un clic qui arrive un tick apres un swap/stop est quand meme avale au lieu de fuir
+        // vers le serveur vanilla.
         event.setCancelled(true);
 
         PlaybackSession session = plugin.getActiveSession();
         ControlBar bar = session != null ? session.getControlBar() : null;
         ControlBar.Button button = bar != null ? bar.buttonAt(entityId) : null;
         if (button == null) {
-            return; // a screen frame or a stale bar id: nothing to act on
+            // TODO virer ce log une fois la barre reconfirmee en jeu : c'est le diagnostic du
+            // "les boutons ne font rien". Un clic sur l'ecran lui-meme tombe ici aussi, donc
+            // c'est de l'INFO, pas un warning.
+            plugin.getLogger().info("Interact on fake entity " + entityId
+                    + " matched no button (session=" + (session != null)
+                    + ", bar=" + (bar != null)
+                    + ", barIds=" + (bar != null ? Arrays.toString(bar.getEntityIds()) : "-")
+                    + ")");
+            return; // frame d'ecran ou id de barre perime, rien a faire
         }
 
-        // Collapse the packet burst of one physical click to a single action.
+        // On replie la rafale de paquets d'un clic physique sur une seule action.
         WrapperPlayClientInteractEntity.InteractAction action = packet.getAction();
         if (action == WrapperPlayClientInteractEntity.InteractAction.INTERACT_AT) {
-            return; // a right click also sends INTERACT: act on that one
+            return; // un clic droit envoie aussi INTERACT, c'est celui-la qu'on prend
         }
         if (action == WrapperPlayClientInteractEntity.InteractAction.INTERACT
                 && packet.getHand() != InteractionHand.MAIN_HAND) {
-            return; // off-hand retry of the same right click
+            return; // retry main gauche du meme clic droit
         }
 
         UUID uuid = event.getUser().getUUID();
@@ -87,7 +93,7 @@ public final class ControlBarListener implements PacketListener {
         long now = System.nanoTime();
         Long last = lastClickNanos.get(uuid);
         if (last != null && now - last < DEBOUNCE_NANOS) {
-            return; // double-click (one channel = ordered events, no race)
+            return; // double-clic (un seul channel = events ordonnes, pas de race)
         }
         lastClickNanos.put(uuid, now);
 
@@ -98,19 +104,20 @@ public final class ControlBarListener implements PacketListener {
     public void onUserDisconnect(UserDisconnectEvent event) {
         UUID uuid = event.getUser().getUUID();
         if (uuid != null) {
-            lastClickNanos.remove(uuid); // keep the debounce map from growing
+            lastClickNanos.remove(uuid); // sinon la map de debounce grossit sans fin
         }
     }
 
-    /** Settles one click on the main thread: permission, action, feedback. */
+    // Regle un clic sur le main thread : permission, action, retour au joueur.
     private void handleClick(PlaybackSession session, ControlBar.Button button, UUID uuid) {
         Player player = plugin.getServer().getPlayer(uuid);
         if (player == null || !player.hasPermission(PERMISSION)) {
-            return; // silently ignore viewers without the /video permission
+            return; // les viewers sans la perm /video sont ignores en silence
         }
         if (session.isStopped()) {
-            return; // the video ended between the click and this tick
+            return; // la video s'est finie entre le clic et ce tick
         }
+        plugin.getLogger().info("Control bar: " + button + " clicked by " + player.getName());  // TODO idem, temporaire
         switch (button) {
             case PLAY_PAUSE -> {
                 if (session.isPaused()) {
@@ -124,8 +131,8 @@ public final class ControlBarListener implements PacketListener {
             case REWIND -> seekRelative(session, player, -SEEK_STEP_MILLIS);
             case FORWARD -> seekRelative(session, player, SEEK_STEP_MILLIS);
             case SKIP -> {
-                // Do NOT touch the PlaylistManager here beyond reading:
-                // stop() -> clearSession() auto-advances the queue by itself.
+                // Ne PAS toucher au PlaylistManager ici au dela de la lecture :
+                // stop() -> clearSession() enchaine la file tout seul.
                 boolean hasNext = !plugin.getPlaylist().isEmpty();
                 session.stop();
                 message(player, hasNext
@@ -135,8 +142,12 @@ public final class ControlBarListener implements PacketListener {
         }
     }
 
-    /** Relative seek from the current position (same semantics as /video seek). */
+    // seek relatif depuis la position courante, meme semantique que /video seek
     private void seekRelative(PlaybackSession session, Player player, long deltaMillis) {
+        if (plugin.isLive()) {      // rien a naviguer dans un direct, voir VideoCommand.handleSeek
+            message(player, "Cannot seek a live stream.");
+            return;
+        }
         long target = Math.max(0, session.getPositionMillis() + deltaMillis);
         if (session.seekTo(target)) {
             message(player, "Seeking to "
@@ -148,7 +159,7 @@ public final class ControlBarListener implements PacketListener {
         player.sendMessage("[MinecraftVideo] " + text);
     }
 
-    /** Hops to the main thread; no-ops while the plugin is disabling. */
+    // saut sur le main thread, no-op pendant le disable
     private void runOnMain(Runnable task) {
         if (!plugin.isEnabled()) {
             return;
@@ -156,7 +167,7 @@ public final class ControlBarListener implements PacketListener {
         try {
             plugin.getServer().getScheduler().runTask(plugin, task);
         } catch (IllegalStateException | IllegalPluginAccessException e) {
-            // Disabled between the check and the schedule; the click is moot.
+            // desactive entre le check et le schedule, le clic ne sert plus a rien
         }
     }
 }

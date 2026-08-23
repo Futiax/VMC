@@ -1,35 +1,28 @@
 package ovh.futiax.minecraftvideo;
 
-/**
- * Immutable audio configuration snapshot taken when a playback starts.
- *
- * <p>Sync model (freeze-frame): the first video frame is sent immediately and
- * FROZEN for {@code audioStartDelayMillis} — the SVC client absorbs the render
- * spike of a screen appearing while the picture is static — then video pacing
- * and audio start together. The audio SKIPS {@code avSyncDelayMillis} of
- * content (via ffmpeg {@code -ss}) so the sound the client hears, after its
- * own buffering, lines up with the picture.
- *
- * @param enabled                master switch ({@code audio-enabled})
- * @param ffmpegPath             ffmpeg executable ({@code ffmpeg-path})
- * @param distance               SVC falloff distance in blocks ({@code audio-distance})
- * @param mode                   channel layout ({@code audio-mode})
- * @param avSyncDelayMillis      estimated client-side audio latency (jitter
- *                               buffer) compensated by skipping that much audio
- *                               content; audio lags → increase, audio leads →
- *                               decrease ({@code av-sync-delay-ms})
- * @param audioStartDelayMillis  how long the first frame stays frozen before
- *                               pacing and audio start ({@code audio-start-delay-ms})
- * @param rearDistance           how many blocks behind the screen plane (toward
- *                               the audience) the surround rear speakers sit
- *                               ({@code surround-rear-distance})
- */
+// Snapshot de la config audio pris au demarrage d'une lecture.
+//
+// Modele de sync (freeze-frame) : la premiere image est envoyee tout de suite puis FIGEE
+// pendant audioStartDelayMillis, le temps que le client SVC encaisse le pic de rendu de
+// l'ecran qui apparait pendant que l'image ne bouge pas. Ensuite le pacing video et l'audio
+// demarrent ensemble. L'audio SAUTE avSyncDelayMillis de contenu (-ss ffmpeg) pour que ce
+// que le client entend, apres son propre buffering, tombe en face de l'image.
+//
+//   enabled               interrupteur general (audio-enabled)
+//   ffmpegPath            executable ffmpeg (ffmpeg-path)
+//   distance              distance de falloff SVC en blocs (audio-distance)
+//   mode                  layout de canaux (audio-mode)
+//   avSyncDelayMillis     latence client estimee (jitter buffer) compensee en sautant
+//                         autant de contenu. Son en retard -> augmenter, en avance ->
+//                         diminuer (av-sync-delay-ms)
+//   audioStartDelayMillis duree du gel de la premiere image (audio-start-delay-ms)
+//   rearDistance          blocs derriere le plan de l'ecran (vers le public) ou se posent
+//                         les enceintes arriere du surround (surround-rear-distance)
 public record AudioSettings(boolean enabled, String ffmpegPath, int distance,
                             AudioMode mode, int avSyncDelayMillis,
                             int audioStartDelayMillis, double rearDistance) {
 
-    /** Audio content skipped at each segment start, in millis. */
-    public long audioSkipMillis() {
+    public long audioSkipMillis() {                 // contenu saute a chaque debut de segment, en ms
         return Math.max(0, avSyncDelayMillis);
     }
 }

@@ -16,42 +16,35 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Clickable playback controls overlaid on a {@link VirtualScreen}'s bottom
- * edge: a row of four buttons — rewind 10 s, play/pause, forward 10 s, skip
- * to the next queued video. Fully packet-based like the screen itself: each button is one
- * fake TEXT_DISPLAY entity (the glyph players see) plus one fake INTERACTION
- * entity (an invisible ~0.55x0.55 hitbox at the same spot, which makes the
- * client send serverbound INTERACT_ENTITY packets on click — handled by
- * {@link ControlBarListener}).
- *
- * <p>The bar overlays the bottom strip of the picture (baseline just above
- * the screen's bottom edge, floating in front of the plane) — video-player
- * style. Strictly below the edge is not an option: the screen's bottom row
- * sits at the anchor player's foot level, so anything under it is buried in
- * flat ground.
- *
- * <p>The displays use billboard FIXED, oriented by the screen's facing yaw
- * (derived from the screen-to-audience vector) so the glyphs sit coplanar with
- * the picture like a real on-screen overlay, and can be pushed right up against
- * the plane without a pivot rotating them into it. If a screen ever renders the
- * glyphs mirrored / back-to-front, flip {@code facingYaw} by 180°. The click
- * hitboxes are axis-aligned boxes regardless, so nothing depends on the text
- * orientation.
- *
- * <p>Owned by the VirtualScreen: spawned per viewer right after the screen's
- * frames (including late joiners) and destroyed with it (the screen's
- * entity-remove packet includes the bar's ids). All state is immutable after
- * construction, so lookups are safe from any thread.
- */
+// Controles de lecture cliquables poses sur le bord bas d'un VirtualScreen : une rangee de
+// quatre boutons - reculer 10 s, play/pause, avancer 10 s, passer a la video suivante de la
+// file. 100% paquets comme l'ecran : chaque bouton = une entite TEXT_DISPLAY fake (le glyphe
+// que les joueurs voient) + une entite INTERACTION fake (une hitbox invisible ~0.55x0.55 au
+// meme endroit, c'est elle qui fait envoyer les INTERACT_ENTITY au clic, traites par
+// ControlBarListener).
+//
+// La barre est en OVERLAY sur la bande du bas de l'image (baseline juste au dessus du bord,
+// flottant devant le plan), facon lecteur video. Sous le bord = pas possible : la rangee du
+// bas de l'ecran est au niveau des pieds du joueur qui l'ancre, donc tout ce qui passe en
+// dessous est enterre dans le sol.
+//
+// Les displays sont en billboard FIXED, orientes par le yaw de l'ecran (deduit du vecteur
+// ecran -> public), comme ca les glyphes restent coplanaires avec l'image comme un vrai
+// overlay et peuvent coller au plan sans qu'un pivot les fasse rentrer dedans. Si un jour un
+// ecran rend les glyphes en miroir, retourner facingYaw de 180 degres. Les hitboxes de clic
+// sont des boites alignees aux axes de toute facon, rien ne depend de l'orientation du texte.
+//
+// Possedee par le VirtualScreen : spawnee par viewer juste apres les frames de l'ecran (late
+// joiners compris) et detruite avec lui (le paquet entity-remove de l'ecran inclut ses ids).
+// Tout est immuable apres construction donc les lookups sont bons depuis n'importe quel thread.
 public final class ControlBar {
 
-    /** The buttons, left to right from the audience's point of view. */
+    // les boutons, de gauche a droite du point de vue du public
     public enum Button {
-        REWIND("⏪"),      // ⏪ seek -10 s
-        PLAY_PAUSE("⏯"),  // ⏯ toggle pause/resume
-        FORWARD("⏩"),     // ⏩ seek +10 s
-        SKIP("⏭");        // ⏭ next queued video
+        REWIND("⏪"),      // seek -10 s
+        PLAY_PAUSE("⏯"),  // pause/resume
+        FORWARD("⏩"),     // seek +10 s
+        SKIP("⏭");        // video suivante de la file
 
         private final String glyph;
 
@@ -60,61 +53,29 @@ public final class ControlBar {
         }
     }
 
-    /*
-     * Entity-data indices on 1.21.x, verified against EntityLib's metadata
-     * offsets for packetevents (1.20.2+ layout; packetevents itself ships no
-     * per-entity index constants): base Entity uses 0-7, then Display adds
-     * 8-22 (11 translation, 12 scale, 15 billboard, 16 brightness, ...) and
-     * TextDisplay continues with 23 text, 24 line width, 25 background color,
-     * 26 opacity, 27 flags. Interaction adds 8 width, 9 height, 10 responsive.
-     */
-    private static final int DISPLAY_SCALE_INDEX = 12;          // Vector3f
-    private static final int DISPLAY_BILLBOARD_INDEX = 15;      // byte
-    private static final int DISPLAY_BRIGHTNESS_INDEX = 16;     // int
-    private static final int TEXT_DISPLAY_TEXT_INDEX = 23;      // component
-    private static final int INTERACTION_WIDTH_INDEX = 8;       // float
-    private static final int INTERACTION_HEIGHT_INDEX = 9;      // float
-    private static final int INTERACTION_RESPONSIVE_INDEX = 10; // boolean
+    private static final byte BILLBOARD_FIXED = 0;              // FIXED=0 VERTICAL=1 HORIZONTAL=2 CENTER=3
+    private static final int FULL_BRIGHT = (15 << 4) | (15 << 20);  // block 15 / sky 15, comme les glow frames
 
-    /** Billboard constraint ids: FIXED=0, VERTICAL=1, HORIZONTAL=2, CENTER=3. */
-    private static final byte BILLBOARD_FIXED = 0;
-    /** Brightness override block 15 / sky 15, matching the glow-frame screen. */
-    private static final int FULL_BRIGHT = (15 << 4) | (15 << 20);
+    private static final double BUTTON_SPACING = 0.9;           // ecart entre centres de boutons
+    private static final double BASELINE_ABOVE_EDGE = 0.05;     // remontee au dessus du bord bas :
+                                                                // la rangee du bas est au niveau des pieds,
+                                                                // donc on overlay au lieu de pendre dessous
+    private static final double FRONT_OFFSET = 0.55;            // vers le public : la surface map est a 0.5,
+                                                                // un chouia devant pour eviter le z-fighting
+    private static final float TEXT_SCALE = 2.0f;               // une ligne de glyphe ~0.25 bloc -> ~0.5
+    private static final float HITBOX_SIZE = 0.55f;             // hitbox qui couvre a peu pres le glyphe
 
-    /** Distance between button centers along the screen's horizontal axis. */
-    private static final double BUTTON_SPACING = 0.9;
-    /**
-     * Lift of the bar's baseline above the screen's bottom edge. The bottom
-     * row is at the anchor player's foot level, so the bar overlays the
-     * picture's bottom strip instead of hanging (underground) below it.
-     */
-    private static final double BASELINE_ABOVE_EDGE = 0.05;
-    /** Offset toward the audience: right against the map surface (at 0.5),
-     *  a hair in front to avoid z-fighting. FIXED billboarding never pivots the
-     *  glyph back into the plane, so it can sit this close. */
-    private static final double FRONT_OFFSET = 0.55;
-    /** Text scale: one glyph line (~0.25 blocks at scale 1) becomes ~0.5. */
-    private static final float TEXT_SCALE = 2.0f;
-    /** Interaction hitbox width and height, roughly covering the glyph. */
-    private static final float HITBOX_SIZE = 0.55f;
-
-    private final int[] textIds;        // button ordinal -> text display id
-    private final int[] interactionIds; // button ordinal -> interaction id
+    private final int[] textIds;        // ordinal du bouton -> id du text display
+    private final int[] interactionIds; // ordinal du bouton -> id de l'interaction
     private final UUID[] textUuids;
     private final UUID[] interactionUuids;
-    private final Vector3d[] positions; // shared glyph + hitbox anchor (both
-                                        // entity types anchor at their bottom)
-    private final float facingYaw;      // FIXED display yaw: glyphs face the audience
+    private final Vector3d[] positions; // ancre commune glyphe + hitbox (les deux types
+                                        // d'entite s'ancrent par le bas)
+    private final float facingYaw;      // yaw du display FIXED : les glyphes regardent le public
 
-    /**
-     * @param centerX     screen center X
-     * @param bottomEdgeY Y of the screen's bottom edge (bottom tile center - 0.5)
-     * @param centerZ     screen center Z
-     * @param rightX      viewer-right unit vector of the screen (X component)
-     * @param rightZ      viewer-right unit vector of the screen (Z component)
-     * @param outX        screen-to-audience unit vector (X component)
-     * @param outZ        screen-to-audience unit vector (Z component)
-     */
+    //   centerX/centerZ = centre de l'ecran, bottomEdgeY = Y du bord bas (centre de la tuile
+    //   du bas - 0.5), rightX/rightZ = vecteur unitaire "droite du spectateur",
+    //   outX/outZ = vecteur unitaire ecran -> public
     ControlBar(double centerX, double bottomEdgeY, double centerZ,
                int rightX, int rightZ, int outX, int outZ) {
         Button[] buttons = Button.values();
@@ -125,14 +86,13 @@ public final class ControlBar {
         this.interactionUuids = new UUID[n];
         this.positions = new Vector3d[n];
 
-        // FIXED billboarding: the display's own yaw orients the glyph. Face it
-        // along the screen-to-audience vector (Minecraft yaw: 0=+Z/south,
-        // 90=-X/west, 180=-Z/north, -90=+X/east).
+        // Billboard FIXED : c'est le yaw du display qui oriente le glyphe. On le pointe le long
+        // du vecteur ecran -> public (yaw MC : 0=+Z/sud, 90=-X/ouest, 180=-Z/nord, -90=+X/est).
         this.facingYaw = (float) Math.toDegrees(Math.atan2(-outX, outZ));
 
         double y = bottomEdgeY + BASELINE_ABOVE_EDGE;
         for (int i = 0; i < n; i++) {
-            double d = (i - (n - 1) / 2.0) * BUTTON_SPACING; // centered row
+            double d = (i - (n - 1) / 2.0) * BUTTON_SPACING; // rangee centree
             positions[i] = new Vector3d(
                     centerX + rightX * d + outX * FRONT_OFFSET,
                     y,
@@ -144,49 +104,49 @@ public final class ControlBar {
         }
     }
 
-    /** Spawns the bar (glyphs + hitboxes) for one viewer. Any thread. */
+    // Spawn la barre (glyphes + hitboxes) pour un viewer. N'importe quel thread.
     void spawnFor(Player player) {
         Button[] buttons = Button.values();
         for (int i = 0; i < buttons.length; i++) {
-            // The visible glyph: a TEXT_DISPLAY with the default (translucent
-            // dark) background. Full-bright so the bar reads in a dark cinema.
+            // le glyphe visible : un TEXT_DISPLAY avec le fond par defaut (sombre translucide),
+            // full-bright pour que la barre reste lisible dans un cinema dans le noir
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerSpawnEntity(textIds[i],
                             Optional.of(textUuids[i]), EntityTypes.TEXT_DISPLAY,
                             positions[i], 0f, facingYaw, facingYaw, 0, Optional.empty()));
             List<EntityData<?>> textData = new ArrayList<>(4);
-            textData.add(new EntityData<>(DISPLAY_SCALE_INDEX,
+            textData.add(new EntityData<>(MetadataIndices.DISPLAY_SCALE,
                     EntityDataTypes.VECTOR3F,
                     new Vector3f(TEXT_SCALE, TEXT_SCALE, TEXT_SCALE)));
-            textData.add(new EntityData<>(DISPLAY_BILLBOARD_INDEX,
+            textData.add(new EntityData<>(MetadataIndices.DISPLAY_BILLBOARD,
                     EntityDataTypes.BYTE, BILLBOARD_FIXED));
-            textData.add(new EntityData<>(DISPLAY_BRIGHTNESS_INDEX,
+            textData.add(new EntityData<>(MetadataIndices.DISPLAY_BRIGHTNESS,
                     EntityDataTypes.INT, FULL_BRIGHT));
-            textData.add(new EntityData<>(TEXT_DISPLAY_TEXT_INDEX,
+            textData.add(new EntityData<>(MetadataIndices.TEXT_DISPLAY_TEXT,
                     EntityDataTypes.ADV_COMPONENT, Component.text(buttons[i].glyph)));
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerEntityMetadata(textIds[i], textData));
 
-            // The clickable hitbox: an INTERACTION entity at the same spot.
-            // "responsive" makes the client play the arm-swing/hit feedback,
-            // so the button feels clicked even before the server reacts.
+            // la hitbox cliquable : une entite INTERACTION au meme endroit. "responsive" fait
+            // jouer le coup de bras / feedback cote client, donc le bouton parait clique avant
+            // meme que le serveur ait reagi.
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerSpawnEntity(interactionIds[i],
                             Optional.of(interactionUuids[i]), EntityTypes.INTERACTION,
                             positions[i], 0f, 0f, 0f, 0, Optional.empty()));
             List<EntityData<?>> boxData = new ArrayList<>(3);
-            boxData.add(new EntityData<>(INTERACTION_WIDTH_INDEX,
+            boxData.add(new EntityData<>(MetadataIndices.INTERACTION_WIDTH,
                     EntityDataTypes.FLOAT, HITBOX_SIZE));
-            boxData.add(new EntityData<>(INTERACTION_HEIGHT_INDEX,
+            boxData.add(new EntityData<>(MetadataIndices.INTERACTION_HEIGHT,
                     EntityDataTypes.FLOAT, HITBOX_SIZE));
-            boxData.add(new EntityData<>(INTERACTION_RESPONSIVE_INDEX,
+            boxData.add(new EntityData<>(MetadataIndices.INTERACTION_RESPONSIVE,
                     EntityDataTypes.BOOLEAN, true));
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerEntityMetadata(interactionIds[i], boxData));
         }
     }
 
-    /** All fake ids of the bar, for the screen's entity-remove packet. */
+    // tous les ids fake de la barre, pour le paquet entity-remove de l'ecran
     int[] getEntityIds() {
         int[] ids = new int[textIds.length + interactionIds.length];
         System.arraycopy(textIds, 0, ids, 0, textIds.length);
@@ -194,11 +154,9 @@ public final class ControlBar {
         return ids;
     }
 
-    /**
-     * The button whose INTERACTION hitbox carries this entity id, or
-     * {@code null} if the id is not one of this bar's hitboxes (text displays
-     * have no hitbox, so clicks can only ever target the interactions).
-     */
+    // Le bouton dont la hitbox INTERACTION porte cet id, null si l'id n'est pas une des
+    // hitboxes de cette barre (les text displays n'ont pas de hitbox, un clic ne peut donc
+    // jamais viser qu'une interaction).
     public Button buttonAt(int entityId) {
         for (int i = 0; i < interactionIds.length; i++) {
             if (interactionIds[i] == entityId) {

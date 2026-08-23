@@ -11,55 +11,41 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
-/**
- * Extracts ONE embedded subtitle track of a source as SubRip text with a
- * dedicated ffmpeg process and answers "which cue is showing at video time T?".
- * The overlay counterpart of {@link AudioStream}: its own ffmpeg per segment,
- * killed and relaunched at the new offset on {@code /video seek}.
- *
- * <p>ffmpeg is spawned as:
- * <pre>
- *   ffmpeg -v error [-ss &lt;offset&gt;] -copyts -i &lt;source&gt; -map 0:s:&lt;n&gt; -f srt -
- * </pre>
- * i.e. the {@code n}-th subtitle stream transcoded to SRT on stdout. Two
- * deliberate choices about timestamps (validated against ffmpeg 8 with a
- * two-track test MKV):
- * <ul>
- *   <li><b>{@code -copyts}</b> keeps the ORIGINAL cue timestamps. Without it,
- *       ffmpeg's rebasing for text subtitles is unreliable (it does not shift by
- *       the seek amount, and does not reliably drop earlier cues), so cue times
- *       would not match the picture after a seek. With {@code -copyts} the SRT
- *       times ARE absolute video time, and {@link #cueAtVideoMillis} compares
- *       {@link PlaybackSession#getPositionMillis()} directly — no offset math.</li>
- *   <li><b>{@code -ss} before {@code -i}</b> is only a speed hint (skip ahead in
- *       a big container). It may still leak a few pre-offset cues; they simply
- *       are not active at the current position, so they never show.</li>
- * </ul>
- *
- * <p>A daemon reader thread streams stdout through {@link SrtParser} and appends
- * finished cues to a time-ordered list; {@link #cueAtVideoMillis} binary-searches
- * it. So cues become visible as soon as ffmpeg emits them (well ahead of
- * playback for a file source), and the read never blocks playback.
- *
- * <p>The source and index are passed as argv (no shell), so there is no
- * injection surface. Only text codecs are extractable; the caller filters
- * bitmap tracks out via {@link SubtitleTrack#textBased()} before constructing.
- */
+// Extrait UNE piste de sous-titres embarquee en texte SubRip avec un ffmpeg dedie, et repond
+// a la question "quelle cue est affichee au temps video T ?". C'est le pendant overlay de
+// AudioStream : son propre ffmpeg par segment, tue et relance au nouvel offset sur /video seek.
+//
+// ffmpeg est lance comme ca :
+//   ffmpeg -v error [-ss <offset>] -copyts -i <source> -map 0:s:<n> -f srt -
+// donc la n-ieme piste de sous-titres transcodee en SRT sur stdout. Deux choix assumes sur les
+// timestamps (valides sur ffmpeg 8 avec un MKV de test a deux pistes) :
+//
+//  - -copyts garde les timestamps de cue D'ORIGINE. Sans lui, le rebasing ffmpeg des subs
+//    texte n'est pas fiable (il ne decale pas de la valeur du seek et ne drope pas
+//    proprement les cues anterieures), donc les temps ne colleraient plus a l'image apres un
+//    seek. Avec -copyts les temps du SRT SONT du temps video absolu, et cueAtVideoMillis()
+//    compare directement getPositionMillis() : aucun calcul d'offset.
+//  - -ss avant -i n'est qu'un hint de vitesse (sauter dans un gros conteneur). Il peut
+//    laisser fuir quelques cues d'avant l'offset : elles ne sont juste pas actives a la
+//    position courante, donc elles ne s'affichent jamais.
+//
+// Un thread daemon de lecture pousse stdout dans le SrtParser et empile les cues finies dans
+// une liste triee par temps ; cueAtVideoMillis() y fait une recherche binaire. Les cues
+// deviennent donc dispo des que ffmpeg les sort (bien avant la lecture pour un fichier local),
+// et la lecture des sous-titres ne bloque jamais la video.
+//
+// La source et l'index partent en argv (pas de shell) : aucune surface d'injection. Seuls les
+// codecs texte sont extractibles, l'appelant filtre les pistes bitmap via textBased() avant
+// de construire.
 public final class SubtitleStream implements Closeable {
 
     private final Process process;
     private final Thread reader;
     private volatile boolean closed = false;
 
-    /** Cues in start-time order (absolute video millis); guarded by {@code cues}. */
+    // cues triees par temps de debut (millis video absolus), gardees par le moniteur de cues
     private final List<SrtParser.Cue> cues = new ArrayList<>();
 
-    /**
-     * Starts the extraction ffmpeg for subtitle stream {@code subtitleIndex}
-     * (the {@code n} in {@code -map 0:s:n}). {@code startOffsetMillis} is a
-     * seek-ahead speed hint only; {@code -copyts} keeps cue times absolute, so
-     * lookups need no offset correction.
-     */
     public SubtitleStream(Logger logger, String ffmpegPath, String source,
                           int subtitleIndex, long startOffsetMillis) throws IOException {
         List<String> cmd = new ArrayList<>();
@@ -67,15 +53,15 @@ public final class SubtitleStream implements Closeable {
         cmd.add("-v");
         cmd.add("error");
         if (startOffsetMillis > 0) {
-            cmd.add("-ss"); // before -i: fast input seek (speed hint; see class doc)
-            // Locale.ROOT: a French default locale would format "12,5" and break ffmpeg.
+            cmd.add("-ss"); // avant -i = fast input seek (juste un hint, cf plus haut)
+            // Locale.ROOT sinon une locale fr sort "12,5" et ffmpeg se plante
             cmd.add(String.format(Locale.ROOT, "%.3f", startOffsetMillis / 1000.0));
         }
-        cmd.add("-copyts");              // keep original (absolute) cue timestamps
+        cmd.add("-copyts");              // on garde les timestamps de cue d'origine (absolus)
         cmd.add("-i");
         cmd.add(source);
         cmd.add("-map");
-        cmd.add("0:s:" + subtitleIndex); // the n-th subtitle stream
+        cmd.add("0:s:" + subtitleIndex); // la n-ieme piste de sous-titres
         cmd.add("-f");
         cmd.add("srt");
         cmd.add("-");                    // stdout
@@ -83,14 +69,14 @@ public final class SubtitleStream implements Closeable {
         this.reader = new Thread(() -> readLoop(logger), "MinecraftVideo-subs-reader");
         this.reader.setDaemon(true);
         this.reader.start();
-        // Drain stderr CONCURRENTLY on its own daemon thread: with -v error it
-        // is usually tiny, but a source with many decode warnings could fill the
-        // ~64 KB stderr pipe and block ffmpeg's stdout writes (deadlock) if we
-        // only read stderr after stdout EOF.
+        // stderr draine EN PARALLELE sur son propre thread daemon : avec -v error c'est
+        // normalement minuscule, mais une source pleine de warnings de decodage pourrait
+        // remplir le pipe stderr (~64 Ko) et bloquer les ecritures stdout de ffmpeg
+        // (deadlock) si on ne lisait stderr qu'apres l'EOF de stdout.
         drainStderr(logger);
     }
 
-    /** Reader thread: parse ffmpeg's SRT stdout into cues until EOF/close. */
+    // thread de lecture : parse le SRT de stdout en cues jusqu'a EOF/close
     private void readLoop(Logger logger) {
         try (BufferedReader in = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -102,20 +88,19 @@ public final class SubtitleStream implements Closeable {
                     addCue(cue);
                 }
             }
-            SrtParser.Cue tail = parser.flush(); // last block if not blank-terminated
+            SrtParser.Cue tail = parser.flush(); // dernier bloc s'il n'a pas eu sa ligne vide
             if (tail != null) {
                 addCue(tail);
             }
         } catch (IOException ignored) {
-            // Process killed (seek/stop) or stream closed; nothing to do.
+            // process tue (seek/stop) ou stream ferme, rien a faire
         }
     }
 
-    /** Appends a cue, keeping the list sorted by start time (ffmpeg emits in order). */
     private void addCue(SrtParser.Cue cue) {
         synchronized (cues) {
-            // ffmpeg emits SRT in chronological order, so append is almost always
-            // already sorted; guard against a rare out-of-order tail cheaply.
+            // ffmpeg sort le SRT dans l'ordre chronologique, donc l'ajout en fin est presque
+            // toujours deja trie ; on se protege quand meme d'une queue desordonnee, ca coute rien.
             if (!cues.isEmpty() && cue.startMillis() < cues.get(cues.size() - 1).startMillis()) {
                 int i = cues.size();
                 while (i > 0 && cues.get(i - 1).startMillis() > cue.startMillis()) {
@@ -128,15 +113,12 @@ public final class SubtitleStream implements Closeable {
         }
     }
 
-    /**
-     * The cue active at absolute video time {@code videoMillis}
-     * ({@link PlaybackSession#getPositionMillis()}), or {@code null} if none is
-     * showing (a gap between cues, or not extracted yet). Cue times are absolute
-     * ({@code -copyts}), so the position is compared directly.
-     */
+    // La cue active au temps video absolu videoMillis (= getPositionMillis()), ou null si
+    // rien n'est affiche (trou entre deux cues, ou pas encore extrait). Les temps de cue sont
+    // absolus (-copyts) donc on compare la position directement.
     public String cueAtVideoMillis(long videoMillis) {
         synchronized (cues) {
-            // Binary search for the last cue whose start <= videoMillis, range-check.
+            // recherche binaire de la derniere cue dont le start <= videoMillis
             int lo = 0;
             int hi = cues.size() - 1;
             int best = -1;
@@ -149,11 +131,12 @@ public final class SubtitleStream implements Closeable {
                     hi = mid - 1;
                 }
             }
-            // Overlapping cues are rare but legal; scan back from the last cue
-            // that started, in case an earlier (possibly much earlier), longer
-            // cue still covers the time while later short ones sorted after it.
-            // No fixed cap: a long banner cue followed by many short overlapping
-            // ones must not be dropped just because it fell outside a window.
+            // Les cues qui se chevauchent sont rares mais legales : on rescanne en arriere
+            // depuis la derniere qui a commence, au cas ou une cue plus ancienne (parfois
+            // beaucoup) et plus longue couvre encore l'instant alors que des courtes sont
+            // triees apres elle. Pas de cap fixe : une longue cue banniere suivie de plein de
+            // courtes qui la chevauchent ne doit pas etre dropee juste parce qu'elle sortait
+            // d'une fenetre.
             for (int i = best; i >= 0; i--) {
                 SrtParser.Cue c = cues.get(i);
                 if (c.startMillis() <= videoMillis && videoMillis < c.endMillis()) {
@@ -173,7 +156,7 @@ public final class SubtitleStream implements Closeable {
                     logger.info("[ffmpeg-subs] " + line);
                 }
             } catch (IOException ignored) {
-                // Process killed or stream closed.
+                // process tue ou stream ferme
             }
         }, "MinecraftVideo-subs-stderr");
         thread.setDaemon(true);
@@ -191,41 +174,32 @@ public final class SubtitleStream implements Closeable {
         return closed;
     }
 
-    /**
-     * Lists the source's embedded subtitle streams with ffprobe (located next
-     * to the configured ffmpeg binary, same derivation as
-     * {@link AudioStream#probeChannels}). Returns an EMPTY list when the source
-     * was probed and has no subtitle streams, or {@code null} when probing
-     * itself failed (see below).
-     *
-     * <p>Blocking (up to ~20 s for a slow URL); call it off the main thread.
-     * The subtitle-relative index of each track (the {@code n} for
-     * {@code -map 0:s:n}) is its position in the returned list.
-     *
-     * <p>Returns {@code null} (NOT an empty list) when probing FAILED — no
-     * ffprobe, timeout, or I/O error — so a caller can distinguish "probed, the
-     * source has no subtitles" (empty list) from "could not probe, retry later"
-     * ({@code null}) instead of caching a transient failure forever.
-     */
+    // Liste les pistes de sous-titres embarquees avec ffprobe (cherche a cote du ffmpeg
+    // configure, meme deduction que AudioStream.probeChannels). Liste VIDE = sonde, cette
+    // source n'a pas de sous-titres ; null = c'est le SONDAGE qui a rate, l'appelant retentera
+    // au lieu de cacher un echec passager pour toujours.
+    //
+    // BLOQUANT (jusqu'a ~20 s sur une URL lente), a appeler hors main thread. L'index relatif
+    // aux subs de chaque piste (le n de -map 0:s:n) est sa position dans la liste rendue.
     public static List<SubtitleTrack> probeTracks(Logger logger, String ffmpegPath, String source) {
         String ffprobePath = siblingFfprobe(ffmpegPath);
         List<SubtitleTrack> tracks = new ArrayList<>();
         Process process = null;
         try {
-            // One line per subtitle stream: "codec|language|title" (empty tags
-            // stay empty). -select_streams s restricts to subtitle streams, so
-            // the row index IS the -map 0:s:n index.
+            // Une ligne par piste : "codec|langue|titre" (les tags absents restent vides).
+            // -select_streams s limite aux pistes de sous-titres, donc l'index de ligne EST
+            // l'index du -map 0:s:n.
             process = new ProcessBuilder(ffprobePath, "-v", "error",
                     "-select_streams", "s",
                     "-show_entries", "stream=codec_name:stream_tags=language,title",
                     "-of", "csv=p=0",
                     source).redirectErrorStream(true).start();
-            // Drain stdout on a separate thread STARTED BEFORE waitFor: a corrupt
-            // container (many parse errors, dozens of streams with long titles)
-            // can emit more than the ~64 KB OS pipe buffer, and ffprobe would
-            // block writing to a full pipe forever if we only read after waitFor
-            // — the whole call would then dead-time out at 20 s. Reading in
-            // parallel keeps the pipe drained so the process can actually exit.
+            // Drain de stdout sur un thread separe DEMARRE AVANT le waitFor : un conteneur
+            // corrompu (plein d'erreurs de parsing, des dizaines de pistes aux titres longs)
+            // peut sortir plus que les ~64 Ko du buffer de pipe de l'OS, et ffprobe resterait
+            // bloque en ecriture sur un pipe plein si on ne lisait qu'apres le waitFor : tout
+            // l'appel partirait en timeout mort a 20 s. Lire en parallele garde le pipe vide
+            // et laisse le process se terminer.
             final Process proc = process;
             final StringBuilder sb = new StringBuilder();
             Thread drain = new Thread(() -> {
@@ -235,7 +209,7 @@ public final class SubtitleStream implements Closeable {
                         sb.append(new String(bytes, StandardCharsets.UTF_8));
                     }
                 } catch (IOException ignored) {
-                    // Process killed or stream closed; leave what we read.
+                    // process tue ou stream ferme, on garde ce qu'on a lu
                 }
             }, "MinecraftVideo-ffprobe-reader");
             drain.setDaemon(true);
@@ -243,9 +217,9 @@ public final class SubtitleStream implements Closeable {
             if (!process.waitFor(20, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 logger.warning("ffprobe timed out listing subtitle tracks of '" + source + "'.");
-                return null; // probe failed: let the caller retry, do not cache
+                return null;
             }
-            drain.join(1000); // pipe is at EOF once the process exited; finish reading
+            drain.join(1000); // le pipe est en EOF une fois le process sorti, on finit de lire
             String out;
             synchronized (sb) {
                 out = sb.toString();
@@ -256,9 +230,9 @@ public final class SubtitleStream implements Closeable {
                 if (row.isEmpty()) {
                     continue;
                 }
-                // csv=p=0 => comma-separated codec_name,language,title (missing
-                // trailing fields simply absent). Split with a limit so a comma
-                // inside a title keeps the rest of the title.
+                // csv=p=0 => codec_name,language,title separes par des virgules (les champs de
+                // fin manquants sont juste absents). Split avec une limite pour qu'une virgule
+                // dans un titre garde la suite du titre.
                 String[] parts = row.split(",", 3);
                 String codec = parts.length > 0 ? parts[0].trim() : "";
                 String lang = parts.length > 1 ? parts[1].trim() : "";
@@ -270,21 +244,17 @@ public final class SubtitleStream implements Closeable {
             if (process != null) {
                 process.destroyForcibly();
             }
-            return null; // probe interrupted: failure, not "no tracks"
+            return null; // sondage interrompu = echec, pas "pas de pistes"
         } catch (IOException e) {
             logger.warning("ffprobe (" + ffprobePath + ") could not list subtitles of '"
                     + source + "' (" + e.getMessage() + ").");
-            return null; // probe failed (e.g. ffprobe missing): let the caller retry
+            return null;
         }
         return tracks;
     }
 
-    /**
-     * Derives the ffprobe path from the configured ffmpeg path (same rule as
-     * {@link AudioStream}): {@code ffmpeg -> ffprobe}, keeping the directory and
-     * any {@code .exe}; falls back to {@code ffprobe} on PATH if the name has no
-     * "ffmpeg" in it.
-     */
+    // meme regle que dans AudioStream : ffmpeg -> ffprobe en gardant le dossier et le .exe
+    // eventuel, retombee sur "ffprobe" du PATH si le nom ne contient pas "ffmpeg"
     private static String siblingFfprobe(String ffmpegPath) {
         java.io.File f = new java.io.File(ffmpegPath);
         String name = f.getName();

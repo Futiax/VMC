@@ -8,57 +8,41 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.logging.Logger;
 
-/**
- * Decodes a video/audio source to raw PCM with its own ffmpeg process and
- * hands it out one Simple Voice Chat frame at a time, de-interleaved per channel.
- *
- * ffmpeg is spawned as:
- *
- *   ffmpeg -v error [-ss &lt;offset&gt;] -i &lt;source&gt; -vn [-af ...] -ac &lt;channels&gt; -ar 48000 -f s16le -
- *
- * i.e. {@code channels}-channel, 48 kHz, signed 16-bit little-endian PCM on
- * stdout — exactly the format Simple Voice Chat expects, in
- * {@value #FRAME_SAMPLES}-sample frames per channel (20 ms). With N &gt; 1
- * channels ffmpeg emits interleaved samples which {@link #nextFrame()} splits
- * back into one {@code short[]} per channel. ffmpeg reads local files and URLs
- * alike. The optional {@code -ss} (before {@code -i} = fast input seek) starts
- * decoding at a given offset, used by {@code /video seek}.
- *
- * <p>Channel-layout handling ({@code -af}):
- * <ul>
- *   <li>mono/stereo output: explicit aresample downmix with
- *       {@code lfe_mix_level} so a 5.1 source's LFE is folded in instead of
- *       silently dropped (swresample's default);</li>
- *   <li>surround (6ch) output from a source with FEWER than 6 channels: a
- *       plain {@code -ac 6} would leave FC/LFE/BL/BR digitally SILENT
- *       (swresample never synthesizes channels — proven with archive.org's
- *       stereo derivative of surroundTest.mp4), so the {@code surround}
- *       filter builds a true 5.1 instead: center from the stereo
- *       correlation, rears from ambience, LFE synthesized by low-pass (real
- *       bass management). The caller supplies the probed source channel
- *       count (see {@link #probeChannels});</li>
- *   <li>surround output from a real 5.1+ source: direct bed mapping, no
- *       filter.</li>
- * </ul>
- *
- * The source is passed as a ProcessBuilder argument (argv, no shell), so there
- * is no shell-injection surface here.
- */
+// Decode une source video/audio en PCM brut avec son propre ffmpeg et la ressort frame SVC
+// par frame SVC, desentrelacee par canal. ffmpeg est lance comme ca :
+//
+//   ffmpeg -v error [-ss <offset>] -i <source> -vn [-af ...] -ac <channels> -ar 48000 -f s16le -
+//
+// donc du PCM 48 kHz signed 16-bit little-endian sur stdout, exactement ce qu'attend Simple
+// Voice Chat, en frames de 960 samples par canal (20 ms). Avec N > 1 canaux ffmpeg sort de
+// l'entrelace que nextFrame() re-separe en un short[] par canal. ffmpeg lit aussi bien les
+// fichiers locaux que les URLs. Le -ss optionnel (avant -i = fast input seek) fait demarrer
+// le decodage a un offset, c'est ce qu'utilise /video seek.
+//
+// Gestion du layout de canaux (-af) :
+//  - sortie mono/stereo : downmix aresample explicite avec lfe_mix_level, comme ca le LFE
+//    d'une source 5.1 est replie dedans au lieu d'etre jete en silence (defaut swresample) ;
+//  - sortie surround (6ch) depuis une source qui a MOINS de 6 canaux : un simple -ac 6
+//    laisserait FC/LFE/BL/BR en silence NUMERIQUE (swresample ne synthetise jamais de
+//    canal, prouve avec le derivative stereo de surroundTest.mp4 sur archive.org), donc on
+//    passe par le filtre surround qui construit un vrai 5.1 : centre depuis la correlation
+//    stereo, arrieres depuis l'ambiance, LFE synthetise en passe-bas (vraie bass management).
+//    L'appelant fournit le nombre de canaux sonde, voir probeChannels() ;
+//  - sortie surround depuis une vraie source 5.1+ : mapping direct du lit, pas de filtre.
+//
+// La source part en argument de ProcessBuilder (argv, pas de shell) : aucune surface
+// d'injection shell ici.
 public final class AudioStream implements Closeable {
 
-    /** Samples per SVC audio frame, PER CHANNEL: 48 kHz * 20 ms = 960. */
-    public static final int FRAME_SAMPLES = 960;
+    public static final int FRAME_SAMPLES = 960;    // samples par frame SVC et PAR CANAL : 48 kHz * 20 ms
 
     private final int channels;
     private final int frameBytes; // channels * FRAME_SAMPLES * 2 (s16le)
     private final Process process;
     private final InputStream stdout;
 
-    /**
-     * @param sourceChannels channel count of the source's audio stream (from
-     *                       {@link #probeChannels}), or -1 when unknown; only
-     *                       consulted for the surround upmix decision
-     */
+    // sourceChannels = nombre de canaux du flux audio de la source (via probeChannels), ou -1
+    // si inconnu. Sert UNIQUEMENT a decider de l'upmix surround.
     public AudioStream(Logger logger, String ffmpegPath, String source, int channels,
                        long startOffsetMillis, int sourceChannels) throws IOException {
         this.channels = channels;
@@ -68,30 +52,27 @@ public final class AudioStream implements Closeable {
         cmd.add("-v");
         cmd.add("error");
         if (startOffsetMillis > 0) {
-            cmd.add("-ss"); // before -i: fast input seek
-            // Locale.ROOT: a French default locale would format "12,5" and break ffmpeg.
+            cmd.add("-ss"); // avant -i = fast input seek
+            // Locale.ROOT sinon une locale fr sort "12,5" et ffmpeg se plante
             cmd.add(String.format(java.util.Locale.ROOT, "%.3f", startOffsetMillis / 1000.0));
         }
         cmd.add("-i");
         cmd.add(source);
-        cmd.add("-vn");                            // no video
+        cmd.add("-vn");                            // pas de video
         if (channels <= 2) {
-            // Explicit resampler stage for the mono/stereo downmix: swresample's
-            // default lfe_mix_level is 0, i.e. a 5.1/7.1 source's LFE channel
-            // (where films put the booms) is silently DROPPED. Fold it in at
-            // ~-3 dB instead. Surround (-ac 6) keeps LFE as its own channel.
-            // (out_chlayout needs ffmpeg >= 6.)
+            // Etage resampler explicite pour le downmix mono/stereo : le lfe_mix_level par
+            // defaut de swresample est 0, autrement dit le canal LFE d'une source 5.1/7.1
+            // (la ou les films mettent les booms) est jete EN SILENCE. On le replie a ~-3 dB.
+            // Le surround (-ac 6) garde le LFE comme canal a part. (out_chlayout : ffmpeg >= 6)
             cmd.add("-af");
             cmd.add("aresample=out_chlayout=" + (channels == 1 ? "mono" : "stereo")
                     + ":lfe_mix_level=0.707");
         } else if (channels == 6 && sourceChannels > 0 && sourceChannels < 6) {
-            // Real upmix for a <6-channel source in surround mode: a plain
-            // -ac 6 leaves FC/LFE/BL/BR digitally SILENT (swresample never
-            // synthesizes channels). Normalize to stereo (folding any LFE in),
-            // then let the surround filter build a true 5.1: center from the
-            // stereo correlation, rears from ambience, LFE synthesized by
-            // low-pass — real bass management, so the in-world subwoofer works
-            // for plain stereo files too.
+            // Vrai upmix pour une source <6 canaux en mode surround : un simple -ac 6 laisse
+            // FC/LFE/BL/BR en silence numerique. On normalise en stereo (en repliant le LFE
+            // s'il y en a un) puis le filtre surround construit un vrai 5.1 : centre depuis
+            // la correlation stereo, arrieres depuis l'ambiance, LFE synthetise en passe-bas.
+            // Du coup le caisson en jeu sert aussi sur des fichiers stereo tout betes.
             cmd.add("-af");
             cmd.add("aresample=out_chlayout=stereo:lfe_mix_level=0.707,"
                     + "surround=chl_out=5.1");
@@ -101,7 +82,7 @@ public final class AudioStream implements Closeable {
         cmd.add("-ar");
         cmd.add("48000");                          // 48 kHz
         cmd.add("-f");
-        cmd.add("s16le");                          // signed 16-bit little-endian PCM
+        cmd.add("s16le");                          // PCM signed 16-bit little-endian
         cmd.add("-");                              // stdout
         this.process = new ProcessBuilder(cmd).start();
         this.stdout = process.getInputStream();
@@ -112,16 +93,13 @@ public final class AudioStream implements Closeable {
         return channels;
     }
 
-    /**
-     * Returns the channel count of the source's first audio stream, probed
-     * with ffprobe (located next to the configured ffmpeg binary), or -1 when
-     * probing fails (no ffprobe, timeout, no audio stream...). -1 makes the
-     * surround decode fall back to the plain 5.1 bed mapping — correct for
-     * real films, and the pre-upmix status quo for everything else.
-     *
-     * <p>Blocking (up to ~20 s for a slow URL); call it once per source and
-     * cache the result across seek segments.
-     */
+    // Nombre de canaux du premier flux audio de la source, sonde avec ffprobe (cherche a cote
+    // du ffmpeg configure), ou -1 si le sondage foire (pas de ffprobe, timeout, pas de flux
+    // audio...). -1 fait retomber le decode surround sur le mapping 5.1 direct : correct pour
+    // les vrais films, et c'est le statu quo d'avant l'upmix pour le reste.
+    //
+    // Bloquant (jusqu'a ~20 s sur une URL lente) : appeler une fois par source et cacher le
+    // resultat entre les segments de seek.
     public static int probeChannels(Logger logger, String ffmpegPath, String source) {
         String ffprobePath = siblingFfprobe(ffmpegPath);
         Process process = null;
@@ -131,8 +109,8 @@ public final class AudioStream implements Closeable {
                     "-show_entries", "stream=channels",
                     "-of", "csv=p=0",
                     source).redirectErrorStream(true).start();
-            // The output is a single tiny line, so no pipe backpressure can
-            // block the process: waitFor first, read after.
+            // La sortie tient sur une ligne minuscule, aucun risque de backpressure sur le
+            // pipe : on peut faire waitFor d'abord et lire apres.
             if (!process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 logger.warning("ffprobe timed out probing audio channels of '"
@@ -141,11 +119,11 @@ public final class AudioStream implements Closeable {
             }
             String out = new String(process.getInputStream().readAllBytes(),
                     StandardCharsets.UTF_8).trim();
-            int channels = Integer.parseInt(out.lines().findFirst().orElse("").trim());
-            return channels > 0 ? channels : -1;
+            int nb = Integer.parseInt(out.lines().findFirst().orElse("").trim());
+            return nb > 0 ? nb : -1;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            process.destroyForcibly(); // process is non-null: start() succeeded
+            process.destroyForcibly(); // non-null : start() a reussi
             return -1;
         } catch (IOException | NumberFormatException e) {
             logger.warning("ffprobe (" + ffprobePath + ") could not probe '" + source
@@ -154,12 +132,9 @@ public final class AudioStream implements Closeable {
         }
     }
 
-    /**
-     * Derives the ffprobe path from the configured ffmpeg path:
-     * {@code ffmpeg -> ffprobe}, {@code /opt/ffmpeg -> /opt/ffprobe},
-     * {@code C:\tools\ffmpeg.exe -> C:\tools\ffprobe.exe}. If the file name
-     * does not contain "ffmpeg", falls back to "ffprobe" from PATH.
-     */
+    // Deduit le chemin de ffprobe depuis celui de ffmpeg : ffmpeg -> ffprobe,
+    // /opt/ffmpeg -> /opt/ffprobe, C:\tools\ffmpeg.exe -> C:\tools\ffprobe.exe.
+    // Si le nom de fichier ne contient pas "ffmpeg", on retombe sur "ffprobe" du PATH.
     private static String siblingFfprobe(String ffmpegPath) {
         java.io.File f = new java.io.File(ffmpegPath);
         String name = f.getName();
@@ -171,24 +146,19 @@ public final class AudioStream implements Closeable {
         return parent == null ? probeName : new java.io.File(parent, probeName).getPath();
     }
 
-    /**
-     * Blocking read of one 20 ms frame (960 samples per channel), de-interleaved.
-     *
-     * @return {@code short[channels][FRAME_SAMPLES]}, or {@code null} at end of
-     *         stream (a short read is treated as EOF).
-     */
+    // Lecture bloquante d'une frame de 20 ms (960 samples par canal), desentrelacee.
+    // Renvoie short[channels][FRAME_SAMPLES], ou null en fin de stream (lecture courte = EOF).
     public short[][] nextFrame() throws IOException {
         byte[] raw = stdout.readNBytes(frameBytes);
         if (raw.length < frameBytes) {
-            return null; // EOF or truncated tail -> end of audio
+            return null; // EOF ou queue tronquee -> fin de l'audio
         }
         short[][] frame = new short[channels][FRAME_SAMPLES];
         for (int s = 0; s < FRAME_SAMPLES; s++) {
-            int base = s * channels * 2; // interleaved: all channels of sample s together
+            int base = s * channels * 2; // entrelace : tous les canaux du sample s a la suite
             for (int c = 0; c < channels; c++) {
                 int off = base + c * 2;
-                // little-endian: low byte first
-                frame[c][s] = (short) ((raw[off] & 0xFF) | (raw[off + 1] << 8));
+                frame[c][s] = (short) ((raw[off] & 0xFF) | (raw[off + 1] << 8));     // little-endian
             }
         }
         return frame;
@@ -203,7 +173,7 @@ public final class AudioStream implements Closeable {
                     logger.info("[ffmpeg-audio] " + line);
                 }
             } catch (IOException ignored) {
-                // Process killed or stream closed.
+                // process tue ou stream ferme
             }
         }, "MinecraftVideo-audio-stderr");
         thread.setDaemon(true);
@@ -216,7 +186,6 @@ public final class AudioStream implements Closeable {
         try {
             stdout.close();
         } catch (IOException ignored) {
-            // Best-effort.
         }
     }
 }

@@ -4,6 +4,10 @@ Plays videos on virtual in-game map screens on a Paper 1.21.8 server with synchr
 
 The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its decoded frames to players as map packets. **Everything is virtual**: fake entity IDs, fake map IDs, packets only — nothing is written to the world or to disk.
 
+[`mcmm`](https://github.com/Futiax/MinecraftVideo) is my own C converter (decoding, scaling and quantization to the vanilla map palette) — it is the actual engine of the project; this repository is the Minecraft side: packets, screen geometry, audio channels, commands.
+
+The project started in 2023 as a Python script baking videos into map `.dat` files and a datapack ([McMovieMaker](https://github.com/Futiax/McMovieMaker)), was rewritten in Cython for speed, then in C as [`mcmm`](https://github.com/Futiax/MinecraftVideo), and finally moved off datapacks to live packets — which is this plugin.
+
 Play from **local files**, **direct URLs**, or **YouTube** (and 1000+ other sites): a page URL is resolved to a playable stream with `yt-dlp`, which the plugin auto-downloads on first use if it isn't already installed — no manual setup.
 
 ---
