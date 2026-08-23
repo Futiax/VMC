@@ -1,6 +1,10 @@
 # Disclaimer — AI assistance
 
-Most of the Java in this repository was written with AI assistance (Claude Code).
+Most of the Java in this repository was written with AI assistance (Claude, Kimi (Which 
+produces a surprisingly pleasant and interesting discussion on future versions of the 
+project involving the new posteffects.),Gemini(for in-depth research on certain issues 
+such as how to process audio with algorithms like the Fourrier algorithm or the Yin 
+algorithm)).
 I'd rather say it plainly than have someone guess.
 
 ## What this code is
@@ -9,12 +13,13 @@ This repository is the **Minecraft interface layer**, not the engine: packets,
 fake entity ids and metadata indices, screen geometry, Simple Voice Chat channel
 wiring, commands, subtitle overlay. The actual video engine is
 [`mcmm`](https://github.com/Futiax/MinecraftVideo), a C converter of mine, itself
-the descendant of a Python script I wrote in 2023
+the descendant of a Python script I wrote in 2022
 ([McMovieMaker](https://github.com/Futiax/McMovieMaker)).
 
-I mainly write C, JavaScript, Python and OCaml. Java is not a language I use, and
+I mainly write C, JavaScript, Python and OCaml. Java is not a language I use often, and
 this layer is glue against the Bukkit and packetevents APIs — so I used a model to
-write most of it.
+help me write it and some simple task like the /stream wich is very similar to /video
+i use ai to copy and adjuste.
 
 ## What is mine
 
@@ -28,14 +33,17 @@ write most of it.
   without a `Range` header) were found by testing in game, not generated.
 - No version is published without a manual in-game test. Every local build
   auto-increments the patch version, and CI tags a release for each push — so the
-  gaps in the release list (`0.2.1 → 0.3.1 → 0.4.3 → 0.4.5 → 0.4.8 → 0.5.0`) are
-  exactly the builds that failed in game and were never pushed. Roughly a dozen
-  died between 0.3.1 and 0.4.3.
+  gaps in the release list (`0.2.1 → 0.3.1 → 0.4.3 → 0.4.5 → 0.4.8 → 0.5.0 → 0.5.17`)
+  are exactly the builds that failed in game and were never pushed. Roughly a dozen
+  died between 0.3.1 and 0.4.3 and even more to perfect the new /stream command.
 
 ## What the model did
 
-Wrote the bulk of the Java to my specification, and helped debug it.
+Wrote Java to my specification for the "dumb" part of the project (translating old js
+code i have made for a kubejs version, repitive task like turning a constant to a 
+setting adjustable in config and with commands) helped me with APIs (Bukkit, 
+Simple Voice Chat,...) because i dindn't know them very well.
 
 If that disqualifies the project in your eyes, that's a legitimate position. The
-engine is in the other repository, and its history goes back to 2023 — judge the
+engine is in the other repository, and its history goes back to 2022 — judge the
 whole thing rather than this layer alone.
