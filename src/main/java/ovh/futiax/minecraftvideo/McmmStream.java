@@ -9,7 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.logging.Logger;
 
 // Lance le convertisseur natif mcmm :
-//   mcmm --stream --palette <palette.json> [--seek <secondes>] <video> <map_w> <map_h> <fps>
+//   mcmm --stream --palette <palette.json> [--seek <secondes>] [--dither|--strict|--data]
+//        <video> <map_w> <map_h> <fps>
 // stdout = binaire pur big-endian, tous les logs de mcmm partent sur stderr.
 // --seek fait demarrer le decodage a l'offset (mcmm le passe en -ss avant -i a son ffmpeg
 // interne), c'est ce qu'utilise /video seek.
@@ -48,9 +49,9 @@ public final class McmmStream implements Closeable {
     // Demarre le process mais ne lit PAS le header : l'appelant doit d'abord publier
     // l'instance quelque part ou stop()/close() peut l'attraper, puis appeler readHeader()
     // (bloquant). Sinon si mcmm n'ecrit jamais rien on reste bloque sans pouvoir le tuer.
-    public McmmStream(Logger logger, String mcmmPath, String palettePath, String source,
-                      int requestedWidth, int requestedHeight, int requestedFps,
-                      long seekOffsetMillis, boolean dither) throws IOException {
+    public McmmStream(Logger logger, ToolInstaller tools, String mcmmPath, String palettePath,
+                      String source, int requestedWidth, int requestedHeight, int requestedFps,
+                      long seekOffsetMillis, RenderMode renderMode) throws IOException {
         java.util.List<String> cmd = new java.util.ArrayList<>();
         cmd.add(mcmmPath);
         cmd.add("--stream");
@@ -61,14 +62,21 @@ public final class McmmStream implements Closeable {
             // Locale.ROOT sinon une locale fr formate "12,5" et le atof de mcmm se plante
             cmd.add(String.format(java.util.Locale.ROOT, "%.3f", seekOffsetMillis / 1000.0));
         }
-        if (dither) {
-            cmd.add("--dither");
+        if (renderMode.mcmmFlag() != null) {
+            cmd.add(renderMode.mcmmFlag());
         }
         cmd.add(source);
         cmd.add(Integer.toString(requestedWidth));
         cmd.add(Integer.toString(requestedHeight));
         cmd.add(Integer.toString(requestedFps));
-        this.process = new ProcessBuilder(cmd).start();
+        ProcessBuilder builder = new ProcessBuilder(cmd);
+        // mcmm lance son PROPRE ffmpeg et le cherche dans le PATH : on y prefixe notre dossier
+        // bin pour qu'il tombe sur celui que ToolInstaller a telecharge. Sans ca un serveur
+        // sans ffmpeg systeme aurait un plugin qui marche et un mcmm qui ne decode rien.
+        if (tools != null) {    // null seulement si onEnable a avorte avant de les construire
+            tools.exportTo(builder);
+        }
+        this.process = builder.start();
         this.stdout = process.getInputStream();
 
         drainStderr(logger);

@@ -7,30 +7,29 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
-// /video option <width> <height> [fps]      options d'ecran persistees
-// /video option audio <mono|stereo|surround>  mode audio persiste
-// /video option avsync <ms>                 delai de sync A/V persiste
-// /video option dither <on|off>             dithering Floyd-Steinberg
-// /video play <url-ou-chemin> [w] [h] [fps] joue avec ces options (les args priment)
+// Les reglages globaux (taille et fps par defaut, audio, sync, rendu, sous-titres) sont sous
+// /vmc (VmcCommand) ; /video ne pilote que la lecture.
+// /video play <url-ou-chemin> [w] [h] [fps] joue avec les reglages de /vmc (les args priment)
 // /video seek <+s|-s|[hh:]mm:ss>            saute ou va a un timecode
 // /video subs <list|off|n>                  overlay d'une piste de sous-titres embarquee
 // /video stop | pause | resume | status
 public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBCOMMANDS =
-            List.of("play", "queue", "skip", "option", "seek", "subs", "stop",
+            List.of("play", "queue", "skip", "seek", "subs", "stop",
                     "pause", "resume", "status");
 
-    private static final int MAX_DIMENSION = 16; // maps par axe
+    static final int MAX_DIMENSION = 16; // maps par axe
 
     // Le client applique les paquets map-data de sa file reseau une fois par tick client
     // (20 TPS), donc il ne peut afficher que 20 images distinctes par seconde quelle que soit
     // notre vitesse d'envoi. Au dela de 20 on gaspille juste de la bande passante et du CPU
     // mcmm. (A ne remonter que si le serveur tourne avec un /tick rate custom.)
-    private static final int MAX_FPS = 20;
+    static final int MAX_FPS = 20;
 
     private final MinecraftVideoPlugin plugin;
 
@@ -48,7 +47,11 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             case "play" -> handlePlay(sender, label, args);
             case "queue" -> handleQueue(sender, label, args);
             case "skip", "next" -> handleSkip(sender);
-            case "option", "options" -> handleOption(sender, label, args);
+            // ancien emplacement des reglages : on dit ou ils sont, sans les executer ici
+            case "option", "options" -> sender.sendMessage("[MinecraftVideo] Settings moved to /vmc"
+                    + (args.length > 1
+                            ? ": /vmc " + String.join(" ", Arrays.copyOfRange(args, 1, args.length))
+                            : " (try /vmc)."));
             case "seek" -> handleSeek(sender, label, args);
             case "subs", "subtitles" -> handleSubs(sender, label, args);
             case "stop" -> handleStop(sender);
@@ -69,10 +72,9 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("Usage: /" + label + " play <url-or-path> [w] [h] [fps]");
             return;
         }
-        PlaybackSession active = plugin.getActiveSession();
-        if (active != null) {
-            sender.sendMessage("A video is already playing"
-                    + " (started by " + active.getInitiatorName() + ")."
+        String busy = plugin.busyReason();
+        if (busy != null) {
+            sender.sendMessage("Cannot start: " + busy + "."
                     + " Use /" + label + " queue add to queue it, or /"
                     + label + " stop first.");
             return;
@@ -99,7 +101,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("[w], [h] and [fps] must be whole numbers.");
             return;
         }
-        if (width < 1 || width > MAX_DIMENSION || height < 1 || height > MAX_DIMENSION) {
+        // en rendu data la taille est de toute facon forcee au mur data (PlaybackSession) : ne
+        // pas refuser une taille qui sera ignoree
+        boolean data = RenderMode.fromConfig(plugin.getConfig()) == RenderMode.DATA;
+        if (!data && (width < 1 || width > MAX_DIMENSION || height < 1 || height > MAX_DIMENSION)) {
             sender.sendMessage("Screen size must be between 1x1 and "
                     + MAX_DIMENSION + "x" + MAX_DIMENSION + " maps.");
             return;
@@ -133,8 +138,9 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         }
         // viewers = tout le monde en ligne maintenant, les late joiners passent par JoinListener
         session.start(plugin.getServer().getOnlinePlayers());
-        sender.sendMessage("[MinecraftVideo] Starting " + source
-                + " on a " + width + "x" + height + " screen at " + fps + " fps...");
+        sender.sendMessage("[MinecraftVideo] Starting " + source + " on a "
+                + session.getScreenWidth() + "x" + session.getScreenHeight()
+                + " screen at " + fps + " fps...");
     }
 
     // /video queue [add <src>|list|remove <n>|clear] : gestion de la file
@@ -215,7 +221,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
     }
 
     // enleve une paire de guillemets (simples ou doubles) qui entoure la chaine
-    private static String stripSurroundingQuotes(String s) {
+    static String stripSurroundingQuotes(String s) {
         if (s.length() >= 2) {
             char first = s.charAt(0);
             if ((first == '"' || first == '\'') && s.charAt(s.length() - 1) == first) {
@@ -223,203 +229,6 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             }
         }
         return s;
-    }
-
-    // /video option <width> <height> [fps] : regle et persiste les options d'ecran
-    // /video option audio <mono|stereo>    : regle et persiste le mode audio
-    private void handleOption(CommandSender sender, String label, String[] args) {
-        if (args.length >= 2 && args[1].equalsIgnoreCase("audio")) {
-            handleAudioOption(sender, label, args);
-            return;
-        }
-        if (args.length >= 2 && args[1].equalsIgnoreCase("avsync")) {
-            handleAvsyncOption(sender, label, args);
-            return;
-        }
-        if (args.length >= 2 && args[1].equalsIgnoreCase("dither")) {
-            handleDitherOption(sender, label, args);
-            return;
-        }
-        if (args.length >= 2 && (args[1].equalsIgnoreCase("sub")
-                || args[1].equalsIgnoreCase("subs") || args[1].equalsIgnoreCase("subtitle"))) {
-            handleSubOption(sender, label, args);
-            return;
-        }
-
-        int curW = plugin.getConfig().getInt("default-width", 4);
-        int curH = plugin.getConfig().getInt("default-height", 3);
-        int curFps = plugin.getConfig().getInt("default-fps", 10);
-        String curMode = AudioMode.fromConfig(
-                plugin.getConfig().getString("audio-mode", "mono")).configName();
-        int curAvsync = plugin.getConfig().getInt("av-sync-delay-ms", 200);
-
-        if (args.length < 3) {
-            sender.sendMessage("[MinecraftVideo] Current options: "
-                    + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode
-                    + ", avsync " + curAvsync + " ms, dither "
-                    + (plugin.getConfig().getBoolean("dither", false) ? "on" : "off"));
-            sender.sendMessage("Set with: /" + label + " option <width> <height> [fps]");
-            sender.sendMessage("      or: /" + label + " option audio <mono|stereo|surround>");
-            sender.sendMessage("      or: /" + label + " option avsync <ms>");
-            sender.sendMessage("      or: /" + label + " option dither <on|off>");
-            sender.sendMessage("      or: /" + label + " option sub <size|height|depth> <value>");
-            return;
-        }
-
-        int width;
-        int height;
-        int fps = curFps;
-        try {
-            width = Integer.parseInt(args[1]);
-            height = Integer.parseInt(args[2]);
-            if (args.length >= 4) {
-                fps = Integer.parseInt(args[3]);
-            }
-        } catch (NumberFormatException e) {
-            sender.sendMessage("<width>, <height> and [fps] must be whole numbers.");
-            return;
-        }
-        if (width < 1 || width > MAX_DIMENSION || height < 1 || height > MAX_DIMENSION) {
-            sender.sendMessage("Screen size must be between 1x1 and "
-                    + MAX_DIMENSION + "x" + MAX_DIMENSION + " maps.");
-            return;
-        }
-        if (fps < 1 || fps > MAX_FPS) {
-            sender.sendMessage("fps must be between 1 and " + MAX_FPS + ".");
-            return;
-        }
-
-        plugin.getConfig().set("default-width", width);
-        plugin.getConfig().set("default-height", height);
-        plugin.getConfig().set("default-fps", fps);
-        plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] Options saved: " + width + "x" + height
-                + " maps @ " + fps + " fps — used by /" + label + " play.");
-    }
-
-    // /video option audio <mono|stereo|surround> : regle et persiste le mode audio
-    private void handleAudioOption(CommandSender sender, String label, String[] args) {
-        String cur = AudioMode.fromConfig(
-                plugin.getConfig().getString("audio-mode", "mono")).configName();
-        if (args.length < 3) {
-            sender.sendMessage("[MinecraftVideo] Current audio mode: " + cur);
-            sender.sendMessage("Set with: /" + label + " option audio <mono|stereo|surround>");
-            return;
-        }
-        String mode = args[2].toLowerCase(Locale.ROOT);
-        if (!AudioMode.configNames().contains(mode)) {
-            sender.sendMessage("Audio mode must be 'mono', 'stereo' or 'surround'.");
-            return;
-        }
-        plugin.getConfig().set("audio-mode", mode);
-        plugin.saveConfig();
-        String detail = switch (AudioMode.fromConfig(mode)) {
-            case MONO -> " — single channel at the screen center.";
-            case STEREO -> " — L/R anchored to the screen edges.";
-            case SURROUND -> " — 6 speakers: front L/C/R at the screen,"
-                    + " a subwoofer at its base, rears behind the audience.";
-        };
-        sender.sendMessage("[MinecraftVideo] Audio mode saved: " + mode + detail
-                + " Applies to the next /" + label + " play.");
-    }
-
-    // /video option dither [on|off] : affiche ou regle/persiste le dithering Floyd-Steinberg
-    // (mcmm --dither). Moins de banding sur les degrades, mais le bruit de dither change a
-    // chaque image, donc le skip des tuiles inchangees ne sert plus a rien.
-    private void handleDitherOption(CommandSender sender, String label, String[] args) {
-        boolean cur = plugin.getConfig().getBoolean("dither", false);
-        if (args.length < 3) {
-            sender.sendMessage("[MinecraftVideo] Dithering is " + (cur ? "on" : "off") + ".");
-            sender.sendMessage("Set with: /" + label + " option dither <on|off>"
-                    + " — smoother gradients, but more bandwidth.");
-            return;
-        }
-        Boolean on = switch (args[2].toLowerCase(Locale.ROOT)) {
-            case "on", "true" -> true;
-            case "off", "false" -> false;
-            default -> null;
-        };
-        if (on == null) {
-            sender.sendMessage("Dither must be 'on' or 'off'.");
-            return;
-        }
-        plugin.getConfig().set("dither", on);
-        plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] Dithering " + (on ? "on" : "off")
-                + (on ? " — smoother gradients; watch /" + label
-                        + " status for dropped frames." : ".")
-                + " Applies to the next /" + label + " play.");
-    }
-
-    // /video option avsync [ms] : affiche ou regle/persiste le delai de sync A/V (combien de
-    // contenu audio est saute pour compenser le buffering du client SVC, cf config.yml)
-    private void handleAvsyncOption(CommandSender sender, String label, String[] args) {
-        int cur = plugin.getConfig().getInt("av-sync-delay-ms", 200);
-        if (args.length < 3) {
-            sender.sendMessage("[MinecraftVideo] Current A/V sync delay: " + cur + " ms.");
-            sender.sendMessage("Set with: /" + label + " option avsync <ms>"
-                    + " — sound arrives late -> increase, sound early -> decrease.");
-            return;
-        }
-        int ms;
-        try {
-            ms = Integer.parseInt(args[2]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage("<ms> must be a whole number of milliseconds (e.g. 200).");
-            return;
-        }
-        if (ms < 0 || ms > 10_000) {
-            sender.sendMessage("A/V sync delay must be between 0 and 10000 ms.");
-            return;
-        }
-        plugin.getConfig().set("av-sync-delay-ms", ms);
-        plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] A/V sync delay saved: " + ms + " ms (was "
-                + cur + "). Applies to the next /" + label + " play.");
-    }
-
-    // /video option sub <size|height|depth> [valeur] : affiche ou regle/persiste la geometrie
-    // de l'overlay sous-titres (cf config.yml). Prend effet au prochain play.
-    private void handleSubOption(CommandSender sender, String label, String[] args) {
-        if (args.length < 4) {
-            sender.sendMessage("[MinecraftVideo] Subtitles: size "
-                    + plugin.getConfig().getDouble("subtitle-size", 1.0) + ", height "
-                    + plugin.getConfig().getDouble("subtitle-height", 0.45) + ", depth "
-                    + plugin.getConfig().getDouble("subtitle-depth", 0.05));
-            sender.sendMessage("Set with: /" + label + " option sub <size|height|depth> <value>");
-            return;
-        }
-        String key = args[2].toLowerCase(Locale.ROOT);
-        double value;
-        try {
-            value = Double.parseDouble(args[3]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage("<value> must be a number (e.g. 4, 0.1, 0.2).");
-            return;
-        }
-        String configKey;
-        double min;
-        double max;
-        String unit;
-        switch (key) {
-            case "size" -> { configKey = "subtitle-size"; min = 0.1; max = 20.0; unit = "text scale"; }
-            // height/depth sont des positions : le negatif est autorise (sous le bord bas,
-            // ou derriere le plan de l'ecran)
-            case "height" -> { configKey = "subtitle-height"; min = -20.0; max = 20.0; unit = "blocks above the bottom edge"; }
-            case "depth" -> { configKey = "subtitle-depth"; min = -10.0; max = 10.0; unit = "blocks in front of the screen"; }
-            default -> {
-                sender.sendMessage("Subtitle option must be 'size', 'height' or 'depth'.");
-                return;
-            }
-        }
-        if (value < min || value > max) {
-            sender.sendMessage(key + " must be between " + min + " and " + max + ".");
-            return;
-        }
-        plugin.getConfig().set(configKey, value);
-        plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] Subtitle " + key + " saved: " + value
-                + " (" + unit + "). Applies to the next /" + label + " play.");
     }
 
     // /video seek <+s|-s|[hh:]mm:ss> : saut relatif ou absolu
@@ -433,6 +242,12 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         // sont deja effacees du disque.
         if (plugin.isLive()) {
             sender.sendMessage("Cannot seek a live stream.");
+            return;
+        }
+        // Une photo non plus : son thread de lecture est gare, personne ne consommerait le
+        // pendingSeek et le joueur lirait "Seeking to ..." sans que rien ne bouge.
+        if (session.isStill()) {
+            sender.sendMessage("Cannot seek a photo.");
             return;
         }
         if (args.length < 2) {
@@ -598,6 +413,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("No video is playing.");
             return;
         }
+        if (session.isStill()) {
+            sender.sendMessage("A photo has nothing to pause.");
+            return;
+        }
         if (session.pause()) {
             sender.sendMessage("[MinecraftVideo] Paused.");
         } else {
@@ -609,6 +428,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         PlaybackSession session = plugin.getActiveSession();
         if (session == null) {
             sender.sendMessage("No video is playing.");
+            return;
+        }
+        if (session.isStill()) {
+            sender.sendMessage("A photo has nothing to resume.");
             return;
         }
         if (session.resume()) {
@@ -632,17 +455,13 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     private void sendUsage(CommandSender sender, String label) {
         sender.sendMessage("Usage:");
-        sender.sendMessage("  /" + label + " option <width> <height> [fps]  — set screen options");
-        sender.sendMessage("  /" + label + " option audio <mono|stereo|surround>  — set audio mode");
-        sender.sendMessage("  /" + label + " option avsync <ms>  — tune the A/V sync delay");
-        sender.sendMessage("  /" + label + " option dither <on|off>  — smoother gradients");
-        sender.sendMessage("  /" + label + " option sub <size|height|depth> <value>  — subtitle overlay");
         sender.sendMessage("  /" + label + " play <url-or-path> [w] [h] [fps]");
         sender.sendMessage("  /" + label + " queue [add <src>|list|remove <n>|clear]  — playlist");
         sender.sendMessage("  /" + label + " skip  — jump to the next queued video");
         sender.sendMessage("  /" + label + " seek <+s|-s|[hh:]mm:ss>  — skip / jump to timestamp");
         sender.sendMessage("  /" + label + " subs <list|off|n>  — embedded subtitle overlay");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
+        sender.sendMessage("Settings (default size, audio, sync, render, subtitles): /vmc");
     }
 
     @Override
@@ -663,66 +482,6 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
             List<String> matches = new ArrayList<>();
             for (String v : List.of("add", "list", "remove", "clear")) {
                 if (v.startsWith(prefix)) {
-                    matches.add(v);
-                }
-            }
-            return matches;
-        }
-        // /video option [audio|avsync|sub] : on propose les mots-cles (width est numerique)
-        if (args.length == 2 && args[0].equalsIgnoreCase("option")) {
-            String prefix = args[1].toLowerCase(Locale.ROOT);
-            List<String> matches = new ArrayList<>();
-            for (String v : List.of("audio", "avsync", "dither", "sub")) {
-                if (v.startsWith(prefix)) {
-                    matches.add(v);
-                }
-            }
-            if (!matches.isEmpty()) {
-                return matches;
-            }
-        }
-        // /video option sub <size|height|depth>
-        if (args.length == 3 && args[0].equalsIgnoreCase("option")
-                && args[1].equalsIgnoreCase("sub")) {
-            String prefix = args[2].toLowerCase(Locale.ROOT);
-            List<String> matches = new ArrayList<>();
-            for (String v : List.of("size", "height", "depth")) {
-                if (v.startsWith(prefix)) {
-                    matches.add(v);
-                }
-            }
-            return matches;
-        }
-        // /video option audio <mono|stereo|surround>
-        if (args.length == 3 && args[0].equalsIgnoreCase("option")
-                && args[1].equalsIgnoreCase("audio")) {
-            String prefix = args[2].toLowerCase(Locale.ROOT);
-            List<String> matches = new ArrayList<>();
-            for (String v : AudioMode.configNames()) {
-                if (v.startsWith(prefix)) {
-                    matches.add(v);
-                }
-            }
-            return matches;
-        }
-        // /video option dither <on|off>
-        if (args.length == 3 && args[0].equalsIgnoreCase("option")
-                && args[1].equalsIgnoreCase("dither")) {
-            String prefix = args[2].toLowerCase(Locale.ROOT);
-            List<String> matches = new ArrayList<>();
-            for (String v : List.of("on", "off")) {
-                if (v.startsWith(prefix)) {
-                    matches.add(v);
-                }
-            }
-            return matches;
-        }
-        // /video option avsync <ms> : quelques valeurs courantes
-        if (args.length == 3 && args[0].equalsIgnoreCase("option")
-                && args[1].equalsIgnoreCase("avsync")) {
-            List<String> matches = new ArrayList<>();
-            for (String v : List.of("0", "100", "200", "300", "500")) {
-                if (v.startsWith(args[2])) {
                     matches.add(v);
                 }
             }

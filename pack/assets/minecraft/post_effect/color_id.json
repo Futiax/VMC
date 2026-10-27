@@ -1,0 +1,252 @@
+{
+  "targets": {
+    "a": {},
+    "b": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_seed",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 1
+          }
+        ]
+      },
+      "output": "b"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "b",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 2
+          }
+        ]
+      },
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 3
+          }
+        ]
+      },
+      "output": "b"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "b",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 4
+          }
+        ]
+      },
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 5
+          }
+        ]
+      },
+      "output": "b"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "b",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 6
+          }
+        ]
+      },
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 7
+          }
+        ]
+      },
+      "output": "b"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "b",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 8
+          }
+        ]
+      },
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_level",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "LevelConfig": [
+          {
+            "name": "Level",
+            "type": "int",
+            "value": 9
+          }
+        ]
+      },
+      "output": "b"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_id_draw",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "b",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "a"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "a",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "BlitConfig": [
+          {
+            "name": "ColorModulate",
+            "type": "vec4",
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

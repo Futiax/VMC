@@ -9,20 +9,64 @@ mcmm-path: ""
 # palette such as Improved Map Colors.
 palette-path: ""
 
+# Client post-effect pushed to every viewer while a screen is displayed
+# (/posteffect add|remove, Minecraft 26.3+ servers only; ignored with a warning
+# on older servers). Meant for the VMC resource pack: set it to
+# "minecraft:custom_palette" together with a palette-path pointing at the SAME
+# custom palette the pack was generated from -- mcmm quantizes on it, the
+# pack displays it. Players without the pack see vanilla map colours instead.
+# In render-mode data, the data wall's decoder (minecraft:vmc_data or minecraft:vmc_data_lan) is
+# pushed INSTEAD of this one (see below).
+# Empty = off.
+post-effect: ""
+
 # Default screen size in maps (each map is 128x128 pixels) and default fps,
 # used when /video play is called without explicit [w] [h] [fps] arguments.
+# Change in-game with /vmc <w> <h> [fps].
 default-width: 4
 default-height: 3
 default-fps: 10
 
-# Floyd-Steinberg dithering (passed to mcmm as --dither). The map palette has
-# ~250 colours, so flat gradients (skies, fades) band visibly; dithering trades
-# that banding for fine noise and lands much closer to the source.
-# COST: the noise changes every frame, so "only resend the tiles that changed"
-# stops helping and bandwidth goes back to a full frame every time. If
-# /video status starts reporting dropped frames, turn this off (or lower the
-# screen size / fps). Applies to the next /video play.
-dither: false
+# How the picture is turned into map colours (/vmc render ...):
+#   normal  ffmpeg scales the picture to the screen, nearest palette colour.
+#   dither  same + Floyd-Steinberg dithering (mcmm --dither). The map palette has
+#           ~250 colours, so flat gradients (skies, fades) band visibly; dithering
+#           trades that banding for fine noise and lands much closer to the source.
+#           COST: the noise changes every frame, so "only resend the tiles that
+#           changed" stops helping and bandwidth goes back to a full frame every
+#           time. If /video status reports dropped frames, go back to normal.
+#   strict  no invented colour (mcmm --strict): the picture is scaled by a WHOLE
+#           factor with nearest neighbour (every pixel becomes a k x k block, or
+#           one pixel in k is kept when it is too big) and centred on black. For
+#           pixel art and QR codes: 'normal' greys every edge as soon as the size
+#           does not match. Fills the screen only when the size divides exactly.
+#           Pictures larger than 8192 px on a side are refused in this mode.
+#   data    EXPERIMENTAL (mcmm --data): no longer a picture on the maps. The picture
+#           is DCT-compressed into a wall of colour symbols that only players
+#           with the VMC resource pack can decode (post effect minecraft:vmc_data,
+#           client 26.3+); they see the picture drawn in a canvas at the centre of
+#           their screen. Players without the pack just see noise.
+#           The screen is ALWAYS the data-wall size below, whatever size is asked, and
+#           has no control bar (it would hide part of the wall). The wall's decoder
+#           post effect is pushed to every viewer instead of post-effect (with
+#           /posteffect, 26.3+ servers; on an older server players must apply it
+#           themselves).
+#           To decode: stand facing the wall, centred, with the WHOLE wall on screen,
+#           in daylight or at full brightness so the map colours stay exact. Too far
+#           and the symbols get smaller than ~2 screen pixels: the wall is not read.
+# An older config with "dither: true" and no render-mode keeps dithering.
+# Applies to the next /video play, /photo or /stream.
+render-mode: normal
+
+# The wall used by render-mode data (/vmc data <wan|lan>):
+#   wan  4x2 maps, an 848x464 picture, up to ~9 Mbit/s per viewer at 10 fps (18 at 20).
+#        Readable (FOV 70) from about 1.4 to 3.2 blocks at 1080p.
+#   lan  5x3 maps, a 1232x720 picture: more data, a better image, but up to ~19 Mbit/s per
+#        viewer at 10 fps (38 at 20) and twice the encoding work for the server. The whole
+#        wall must still fit on screen with readable symbols: at 1080p only from about
+#        2.1 to 3.1 blocks away (FOV 70). Players decode it with minecraft:vmc_data_lan
+#        (same VMC resource pack).
+data-wall: wan
 
 # Clickable control bar floating under the screen (packet-only entities, like
 # the screen itself): rewind 10s / play-pause / forward 10s / skip to the next
@@ -38,7 +82,7 @@ control-bar-enabled: true
 # Set to 0 to send to every player in the screen's world, whatever the distance.
 viewer-range-blocks: 64
 
-# --- Subtitle overlay geometry (also settable in-game: /video option sub ...) ---
+# --- Subtitle overlay geometry (also settable in-game: /vmc sub ...) ---
 #   size   = text scale (bigger = larger glyphs)
 #   height = blocks above the screen's bottom edge (raises the text; negative
 #            lowers it below the edge; a control bar, if present, adds its own
@@ -123,7 +167,7 @@ audio-enabled: true
 #              audience. A 5.1+ source (or Atmos bed) maps directly; a
 #              mono/stereo source gets a REAL upmix (center/rears/LFE are
 #              synthesized), so every speaker plays. Costs ~6x audio bandwidth.
-# Change in-game with /video option audio <mono|stereo|surround>.
+# Change in-game with /vmc audio <mono|stereo|surround>.
 audio-mode: "mono"
 
 # How many blocks behind the screen plane (toward the audience) the surround
@@ -141,12 +185,69 @@ surround-rear-distance: 10
 # content is SKIPPED so the sound lands on the picture:
 #   sound arrives LATE (after the picture)  -> INCREASE it
 #   sound arrives EARLY (before the picture) -> DECREASE it (or set 0)
+# Change in-game with /vmc avsync <ms>.
 av-sync-delay-ms: 200
 audio-start-delay-ms: 1000
 
 # Path to the ffmpeg executable used to decode the audio track (must be in PATH
 # or an absolute path). ffmpeg reads local files and URLs alike.
 ffmpeg-path: "ffmpeg"
+
+# Download a portable, statically-linked ffmpeg (ffmpeg AND ffprobe) when none is
+# found, so the server needs nothing preinstalled. Resolution order at startup:
+#   1. ffmpeg-path above;
+#   2. an ffmpeg+ffprobe pair already on the server's PATH (preferred: the admin
+#      maintains it);
+#   3. a copy this plugin downloads ONCE from the official FFmpeg-Builds GitHub
+#      releases into plugins/MinecraftVideo/bin.
+#
+# The download is ~130 MB (plus roughly as much again, briefly, while unpacking)
+# and runs in the BACKGROUND at startup: the server boots immediately, and a
+# /video play issued during that window behaves as it would without ffmpeg. The
+# LGPL build is used (nothing here encodes with x264/x265). Unpacking a Linux
+# build needs `tar` with xz support; Windows builds need nothing extra. No macOS
+# build is published upstream, so install ffmpeg yourself there.
+#
+# Set to false to keep the old behaviour: ffmpeg must be installed by the admin.
+ffmpeg-autodownload: true
+
+# --- Resource pack (the VMC post effects, needed by render-mode: data) ---
+# The pack ships INSIDE this jar. Minecraft never transfers a pack over the game
+# protocol: the server sends a URL and a SHA-1, and the client fetches the zip
+# over HTTP. So the plugin serves it itself from a tiny built-in HTTP server and
+# hands each player a URL built from the host THEY used to connect -- nothing to
+# host, nothing to configure.
+resource-pack: true
+
+# Explicit URL of the pack zip. Leave EMPTY to use the pack.zip asset of THIS
+# plugin version's GitHub release, which is what you want in almost every case:
+# nothing to open, nothing to host. The URL is derived from the running version,
+# so an upgrade follows along on its own -- that is why it is not written out
+# here (your config.yml is never overwritten, so a hardcoded URL would keep
+# pointing at the release you first installed, and its pack would no longer
+# match this jar's hash).
+resource-pack-url: ""
+
+# Serve the pack from a tiny HTTP server inside the plugin instead of fetching
+# it from a URL. For servers whose players have no outbound internet access.
+#
+# It needs resource-pack-port below to be reachable BY PLAYERS, and that port is
+# NOT the game port -- a closed port ends in "Connection refused" on the client
+# and nobody gets the pack. Leave this false unless you know you need it.
+resource-pack-selfhost: false
+
+# Port of that built-in HTTP server. Only used when resource-pack-selfhost is on.
+resource-pack-port: 8099
+
+# Make the pack MANDATORY (a player who declines is disconnected).
+# Left false on purpose: vanilla clients accept server packs on their own, so
+# everyone gets it anyway, WITHOUT the failure mode where a wrong URL or a closed
+# port locks every player out of the server. Turn it on once you have confirmed
+# players actually receive the pack.
+resource-pack-required: false
+
+# Message shown in the client's pack prompt. Empty = vanilla wording.
+resource-pack-prompt: ""
 
 # Audio falloff distance in blocks (how far the screen's sound carries).
 audio-distance: 48

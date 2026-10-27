@@ -22,6 +22,12 @@ public record AudioSettings(boolean enabled, String ffmpegPath, int distance,
                             AudioMode mode, int avSyncDelayMillis,
                             int audioStartDelayMillis, double rearDistance) {
 
+    // Une photo n'a pas de bande-son : memes reglages, interrupteur coupe.
+    public AudioSettings muted() {
+        return new AudioSettings(false, ffmpegPath, distance, mode, avSyncDelayMillis,
+                audioStartDelayMillis, rearDistance);
+    }
+
     public long audioSkipMillis() {                 // contenu saute a chaque debut de segment, en ms
         return Math.max(0, avSyncDelayMillis);
     }

@@ -54,5 +54,9 @@ else
     echo "version: $current (unchanged)"
 fi
 
+# Le resource pack VMC est zippe par make-pack.sh, partage avec la CI (qui lance mvn
+# directement et produirait sinon un jar de release sans pack).
+./make-pack.sh
+
 mvn -q clean package
 echo "built: target/minecraftvideo-plugin-$new.jar"

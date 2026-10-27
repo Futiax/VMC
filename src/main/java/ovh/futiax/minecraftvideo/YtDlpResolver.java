@@ -1,6 +1,7 @@
 package ovh.futiax.minecraftvideo;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -19,7 +20,7 @@ import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-// Telecharge les videos (YouTube, etc.) avec yt-dlp (voir YtDlpInstaller). Les URLs media
+// Telecharge les videos (YouTube, etc.) avec yt-dlp (voir ToolInstaller). Les URLs media
 // directes et les chemins locaux NE passent PAS par ici : MediaCache les recupere lui-meme
 // avec son client HTTP protege contre le SSRF.
 //
@@ -40,27 +41,29 @@ public final class YtDlpResolver {
     // extensions traitees comme media direct (c'est MediaCache qui les gere)
     private static final Set<String> DIRECT_EXTENSIONS = Set.of(
             "mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "flv", "ogv", "ogg",
-            "wmv", "mpg", "mpeg", "m3u8", "mpd", "3gp");
+            "wmv", "mpg", "mpeg", "m3u8", "mpd", "3gp",
+            // Images : ffmpeg les lit toutes. Sans elles, /photo <url d'un png> ferait
+            // telecharger yt-dlp (~30 Mo) pour aller chercher une image avec un selecteur
+            // de format video.
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "tif", "tiff");
 
     private static final int ERROR_TAIL_LINES = 6;      // queue de sortie gardee pour expliquer un echec
     private static final Pattern FRAGMENT = Pattern.compile("\\.f\\d+\\.[^.]+$");    // fichier mono-format
                                                                                     // avant fusion, ex .f299.mp4
 
-    private final YtDlpInstaller installer;
+    private final ToolInstaller installer;
     private final Logger logger;
-    private final String ffmpegPath;
 
-    public YtDlpResolver(YtDlpInstaller installer, Logger logger, String ffmpegPath) {
+    public YtDlpResolver(ToolInstaller installer, Logger logger) {
         this.installer = installer;
         this.logger = logger;
-        this.ffmpegPath = ffmpegPath;
     }
 
     // Est-ce que cette source est une URL de PAGE que yt-dlp doit telecharger (http(s) qui
     // n'est pas un fichier media direct) ? Verifs legeres seulement, on ne resout PAS
     // l'executable, donc appelable depuis n'importe quel thread.
     public boolean handles(String source) {
-        return installer.isEnabled() && source != null
+        return installer.isYtDlpEnabled() && source != null
                 && isHttp(source) && !hasDirectExtension(source);
     }
 
@@ -71,7 +74,7 @@ public final class YtDlpResolver {
     // Leve une IOException si yt-dlp est indispo, echoue, ou si l'abort tire.
     public Path download(String source, Path target, long maxBytes, BooleanSupplier abort)
             throws IOException {
-        String exe = installer.getExecutable();
+        String exe = installer.ytDlp();
         if (exe == null) {
             throw new IOException("yt-dlp indisponible (voir log serveur)");
         }
@@ -88,8 +91,10 @@ public final class YtDlpResolver {
                 // file"). Avec un placeholder d'extension explicite, le stem est laisse tranquille.
                 "-o", target + ".%(ext)s"));
         // Seulement si c'est un vrai chemin : un "ffmpeg" nu est un nom de PATH, et
-        // --ffmpeg-location attend un fichier ou un dossier.
-        if (ffmpegPath != null && ffmpegPath.indexOf('/') >= 0) {
+        // --ffmpeg-location attend un fichier ou un dossier. Demande a chaque appel plutot
+        // que capture au demarrage : la resolution d'ffmpeg peut finir APRES onEnable.
+        String ffmpegPath = installer.ffmpeg();
+        if (ffmpegPath.indexOf(File.separatorChar) >= 0 || ffmpegPath.indexOf('/') >= 0) {
             command.add("--ffmpeg-location");
             command.add(ffmpegPath);
         }
@@ -119,7 +124,7 @@ public final class YtDlpResolver {
     // manifeste HLS, requete par requete, exactement comme le ferait un lecteur. Un direct n'a
     // de toute facon pas de fichier a telecharger.
     public String resolveLive(String source) throws IOException {
-        String exe = installer.getExecutable();
+        String exe = installer.ytDlp();
         if (exe == null) {
             throw new IOException("yt-dlp indisponible (voir log serveur)");
         }

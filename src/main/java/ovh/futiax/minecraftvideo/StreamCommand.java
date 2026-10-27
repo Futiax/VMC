@@ -14,7 +14,7 @@ import java.util.List;
 // Volontairement pauvre : un direct N'EST PAS une video avec une option en plus. Pas de file
 // visible (elle existe, mais c'est la plomberie de LiveStream : les tranches y passent toutes
 // seules), pas de seek (naviguer dans un direct n'a pas de sens, et les tranches passees sont
-// deja effacees). Tout le reste -- taille d'ecran, fps, dither, audio, sous-titres -- vient des
+// deja effacees). Tout le reste -- taille d'ecran, fps, rendu, audio, sous-titres -- vient des
 // memes options que /video, parce que c'est la meme lecture derriere.
 public final class StreamCommand implements CommandExecutor, TabCompleter {
 
@@ -61,13 +61,20 @@ public final class StreamCommand implements CommandExecutor, TabCompleter {
                     + " (l'ecran se pose a sa position).");
             return true;
         }
+        // Sans ca, /stream pendant une photo decoupe des tranches que startPlaybackIfIdle
+        // ne joue jamais (le slot n'est jamais libere), en silence.
+        String busy = plugin.busyReason();
+        if (busy != null) {
+            sender.sendMessage("[MinecraftVideo] Impossible de lancer un direct : " + busy + ".");
+            return true;
+        }
         start(player, args[0]);
         return true;
     }
 
     // Duree d'une tranche = le seul reglage du direct, et il coupe dans les deux sens : long =
     // plus de retard sur le direct, court = un raccord (donc un trou de son) toutes les N
-    // secondes. Persiste comme les options de /video, et s'applique au PROCHAIN /stream : le
+    // secondes. Persiste comme les reglages de /vmc, et s'applique au PROCHAIN /stream : le
     // -segment_time est fixe au demarrage de ffmpeg, le changer a chaud voudrait dire relancer
     // le decoupage, ce qui coute exactement un /stream stop suivi d'un /stream <url>.
     private boolean delay(CommandSender sender, String[] args) {

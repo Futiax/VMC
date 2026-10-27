@@ -7,7 +7,7 @@ Welcome to the full documentation for **MinecraftVideo (VMC)**. This wiki covers
 ## Table of Contents
 
 1. [Advanced Commands Reference](#advanced-commands-reference)
-2. [Options Configuration (video option)](#options-configuration-video-option)
+2. [Settings (/vmc)](#settings-vmc)
 3. [Subtitle Tracking (video subs)](#subtitle-tracking-video-subs)
 4. [Audio Modes & Spatialization](#audio-modes--spatialization)
 5. [Technical Architecture & Performance](#technical-architecture--performance)
@@ -37,37 +37,51 @@ All commands require the `minecraftvideo.use` permission (default: OP).
 
 ---
 
-## Options Configuration (video option)
+## Settings (/vmc)
 
-The `/video option` command allows you to view or set configuration parameters on the fly, which are persisted to the server's `config.yml`.
+The `/vmc` command shows (with no argument) or sets the plugin's global settings on the fly. They are persisted to the server's `config.yml` and apply to the next `/video play`, `/photo` or `/stream`.
 
 ### Screen Size & FPS
 ```
-/video option <width> <height> [fps]
+/vmc <width> <height> [fps]
 ```
 - **`<width>` and `<height>`**: Dimension in Minecraft maps (1 to 16). Each map is 128x128 pixels.
 - **`[fps]`**: Frame rate limit (1 to 20 FPS). Default is 10.
 
 ### Audio Configuration
 ```
-/video option audio <mono|stereo|surround>
+/vmc audio <mono|stereo|surround>
 ```
 Sets the spatial audio rendering mode. (See the [Audio Modes](#audio-modes--spatialization) section below).
 
 ### A/V Synchronization
 ```
-/video option avsync <milliseconds>
+/vmc avsync <milliseconds>
 ```
 - **`<milliseconds>`**: Sync delay compensation (default: `200` ms). If audio is arriving late compared to the video, increase this value. If the audio is too early, decrease it.
 
 ### Subtitle Overlay Geometry
 ```
-/video option sub <size|height|depth> <value>
+/vmc sub <size|height|depth> <value>
 ```
 Adjusts the 3D text overlay placement for subtitles:
 - **`size <scale>`**: Text size scale (default: `1.0`, range: `0.1` to `20.0`).
 - **`height <value>`**: Blocks relative to the bottom edge of the screen (default: `0.45`, range: `-20.0` to `20.0`).
 - **`depth <value>`**: Distance in blocks in front of the screen (default: `0.05`, range: `-10.0` to `10.0`).
+
+### Render Mode
+```
+/vmc render <normal|dither|strict|data>
+```
+How the picture becomes map colours: `normal` (scaled, nearest palette colour), `dither` (smoother gradients, more bandwidth), `strict` (pixel-exact whole-number scale, for pixel art and QR codes), `data` (experimental: a wall of colour symbols that only the VMC resource pack decodes, see below).
+
+### Data Wall
+```
+/vmc data <wan|lan>
+```
+The wall used by `/vmc render data`:
+- **`wan`** (default): 4x2 maps, an 848x464 picture, up to ~9 Mbit/s per viewer at 10 fps. Readable from about 1.4 to 3.2 blocks away on a 1080p screen (FOV 70).
+- **`lan`**: 5x3 maps, a 1232x720 picture, up to ~19 Mbit/s per viewer at 10 fps, and twice the encoding work for the server. The whole wall must be on screen and readable: on a 1080p screen that means standing about 2.1 to 3.1 blocks away (FOV 70).
 
 ---
 

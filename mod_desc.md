@@ -64,14 +64,16 @@ All commands require the `minecraftvideo.use` permission (default: OP). Once a v
 - `/video subs off`: Hides the subtitle overlay.
 
 ### Options & Configuration
-Use `/video option` to customize the display, audio, and subtitles (settings persist in `config.yml` and apply to the next `/video play`):
-- `/video option <width> <height> [fps]`
+Use `/vmc` to see or change the global settings (they persist in `config.yml` and apply to the next `/video play`):
+- `/vmc <width> <height> [fps]`
   *Sets the default screen size (in maps, e.g. 4×3) and frame rate (up to 20 fps).*
-- `/video option audio <mono|stereo|surround>`
+- `/vmc audio <mono|stereo|surround>`
   *Switches the spatial audio mode.*
-- `/video option avsync <ms>`
+- `/vmc avsync <ms>`
   *Adjusts the audio/video sync delay (default: 200 ms) — increase if sound lags, decrease if it leads.*
-- `/video option sub <size|height|depth> <value>`
+- `/vmc data <wan|lan>`
+  *Experimental data mode wall: `wan` (4x2 maps, 848x464 picture) or `lan` (5x3 maps, 1232x720 picture, about twice the bandwidth).*
+- `/vmc sub <size|height|depth> <value>`
   *Tunes the subtitle text size (scale), height above the screen's bottom edge, or depth (distance in front of the screen). Height and depth accept negatives.*
 
 ---

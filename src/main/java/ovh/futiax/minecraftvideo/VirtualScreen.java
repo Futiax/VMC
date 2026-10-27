@@ -82,6 +82,8 @@ public final class VirtualScreen {
     private final double rangeSquared;  // 0 = pas de limite de distance
 
     private final Set<Player> viewers = ConcurrentHashMap.newKeySet();
+    private final PostEffects postEffects;          // suit exactement l'ensemble des viewers
+    private final String postEffect;                // id pousse aux viewers, "" = aucun
     private volatile byte[][] lastFrame;
 
     // Viewers a qui on a saute une frame (leur channel netty etait plein) -> quelles tuiles leur
@@ -94,7 +96,10 @@ public final class VirtualScreen {
     // anchor est capturee sur le main thread, et on n'en tire qu'une position de bloc et un
     // yaw : la Location n'est jamais relue, donc l'ecran ne suit pas le joueur qui l'a pose.
     public VirtualScreen(Location anchor, int width, int height, boolean withControlBar,
-                         SubtitleSettings subtitleSettings, int viewerRange) {
+                         SubtitleSettings subtitleSettings, int viewerRange,
+                         PostEffects postEffects, String postEffect) {
+        this.postEffects = postEffects;
+        this.postEffect = postEffect;
         this.width = width;
         this.height = height;
         this.worldId = anchor.getWorld().getUID();
@@ -211,6 +216,7 @@ public final class VirtualScreen {
             controlBar.spawnFor(player);
         }
         subtitleOverlay.spawnFor(player); // cache sauf si une cue est en cours
+        postEffects.apply(player, postEffect);
         byte[][] frame = lastFrame;
         if (frame != null) {
             sendMapData(player, frame);
@@ -262,6 +268,18 @@ public final class VirtualScreen {
                 or(debt, changed, count);   // sa dette + ce qui change maintenant
             }
             sendBundle(viewer, tiles, debt != null ? debt : changed, count);
+        }
+    }
+
+    // Renvoie a chaque viewer ce qu'il a RATE, et rien aux autres : repasser la MEME frame
+    // rend changed[] entierement faux (Arrays.equals sur les memes references), donc seul un
+    // viewer qui porte une dette recoit quelque chose. C'est ce qui rattrape une photo : elle
+    // n'envoie qu'une image, et un viewer dont la socket etait pleine a cet instant-la resterait
+    // sinon sur un ecran vide jusqu'a l'arret.
+    public void resendMissed() {
+        byte[][] frame = lastFrame;
+        if (frame != null) {
+            sendFrame(frame);
         }
     }
 
@@ -329,6 +347,7 @@ public final class VirtualScreen {
             return;
         }
         missed.remove(player.getUniqueId());
+        postEffects.clear(player);
         if (player.isOnline()) {
             PacketEvents.getAPI().getPlayerManager().sendPacket(player,
                     new WrapperPlayServerDestroyEntities(allEntityIds()));
@@ -355,6 +374,7 @@ public final class VirtualScreen {
     public void destroy() {
         int[] ids = allEntityIds();
         for (Player viewer : viewers) {
+            postEffects.clear(viewer);
             if (viewer.isOnline()) {
                 PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
                         new WrapperPlayServerDestroyEntities(ids.clone()));

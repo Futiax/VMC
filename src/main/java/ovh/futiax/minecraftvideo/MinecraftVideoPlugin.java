@@ -18,23 +18,33 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     private volatile PlaybackSession activeSession;     // une seule session a la fois
     private final PlaylistManager playlist = new PlaylistManager(this);     // FIFO + auto-advance
     private MediaCache mediaCache;                      // null tant que onEnable n'a pas lu la config
+    private PostEffects postEffects;
     private VoicechatHook voicechatHook;                // null si SVC pas installe
     private final NativeInstaller nativeInstaller = new NativeInstaller(this);
     private PacketListenerCommon controlBarListener;    // garde pour l'unregister au disable
     private YtDlpResolver ytDlpResolver;                // partage avec /stream
     private LiveStream liveStream;                      // non-null pendant un /stream
+    private ToolInstaller tools;                        // ffmpeg/ffprobe + yt-dlp
+    private ResourcePackService resourcePack;           // pack VMC pousse aux joueurs au join
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         nativeInstaller.install();
+        postEffects = new PostEffects(this, getConfig().getString("post-effect", ""));
+        purgePhotoClips();  // clips temporaires laisses par un arret brutal
 
-        YtDlpInstaller ytDlpInstaller = new YtDlpInstaller(getLogger(),
-                getDataFolder().toPath(),
+        // Resolution des outils externes en tache de fond : onEnable ne doit pas attendre un
+        // telechargement de ~130 Mo (ffmpeg), et le serveur doit pouvoir demarrer sans.
+        tools = new ToolInstaller(getLogger(), getDataFolder().toPath(),
                 getConfig().getBoolean("youtube-support", true),
-                getConfig().getString("yt-dlp-path", ""));
-        ytDlpResolver = new YtDlpResolver(ytDlpInstaller, getLogger(),
-                getConfig().getString("ffmpeg-path", "ffmpeg"));
+                getConfig().getString("yt-dlp-path", ""),
+                getConfig().getString("ffmpeg-path", "ffmpeg"),
+                getConfig().getBoolean("ffmpeg-autodownload", true));
+        tools.start();
+        resourcePack = new ResourcePackService(this);
+        resourcePack.enable();
+        ytDlpResolver = new YtDlpResolver(tools, getLogger());
         mediaCache = new MediaCache(getLogger(), getDataFolder().toPath(),
                 getConfig().getBoolean("cache-remote-sources", true),
                 getConfig().getInt("cache-max-size-mb", 2048),
@@ -49,6 +59,15 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             getLogger().severe("Command 'video' is missing from plugin.yml!");
         }
 
+        PluginCommand photo = getCommand("photo");
+        if (photo != null) {
+            PhotoCommand photoCommand = new PhotoCommand(this);
+            photo.setExecutor(photoCommand);
+            photo.setTabCompleter(photoCommand);
+        } else {
+            getLogger().severe("Command 'photo' is missing from plugin.yml!");
+        }
+
         PluginCommand stream = getCommand("stream");
         if (stream != null) {
             StreamCommand streamCommand = new StreamCommand(this);
@@ -56,6 +75,15 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             stream.setTabCompleter(streamCommand);
         } else {
             getLogger().severe("Command 'stream' is missing from plugin.yml!");
+        }
+
+        PluginCommand vmc = getCommand("vmc");
+        if (vmc != null) {
+            VmcCommand vmcCommand = new VmcCommand(this);
+            vmc.setExecutor(vmcCommand);
+            vmc.setTabCompleter(vmcCommand);
+        } else {
+            getLogger().severe("Command 'vmc' is missing from plugin.yml!");
         }
 
         getServer().getPluginManager().registerEvents(new JoinListener(this), this);
@@ -129,6 +157,29 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 ? nativeInstaller.getPalettePath().toString() : null;
     }
 
+    // Les clips de /photo vivent dans <dataFolder>/photo et sont supprimes a l'arret de la
+    // session ; il n'en reste qu'apres un crash. Menage au demarrage, comme MediaCache.
+    private void purgePhotoClips() {
+        java.nio.file.Path dir = StillClip.directory(getDataFolder().toPath());
+        if (!java.nio.file.Files.isDirectory(dir)) {
+            return;
+        }
+        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.list(dir)) {
+            for (java.nio.file.Path file : files.toList()) {
+                try {
+                    java.nio.file.Files.deleteIfExists(file);
+                } catch (java.io.IOException ignored) {
+                    // pas grave : un fichier de plus, le prochain demarrage retentera
+                }
+            }
+        } catch (java.io.IOException ignored) {
+        }
+    }
+
+    public PostEffects getPostEffects() {
+        return postEffects;
+    }
+
     public PlaylistManager getPlaylist() {
         return playlist;
     }
@@ -175,6 +226,14 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return mediaCache;
     }
 
+    public ToolInstaller getTools() {
+        return tools;
+    }
+
+    public ResourcePackService getResourcePack() {
+        return resourcePack;
+    }
+
     // snapshots des options config, pris au demarrage d'une lecture
     public SubtitleSettings buildSubtitleSettings() {
         return new SubtitleSettings(
@@ -186,7 +245,10 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     public AudioSettings buildAudioSettings() {
         return new AudioSettings(
                 getConfig().getBoolean("audio-enabled", true),
-                getConfig().getString("ffmpeg-path", "ffmpeg"),
+                // tools.ffmpeg() plutot que la config brute : c'est le binaire telecharge
+                // quand il y en a un, et le chemin configure sinon. Tout ce qui lance ffmpeg
+                // ou ffprobe (audio, sous-titres, /photo) passe par ce champ.
+                tools.ffmpeg(),
                 getConfig().getInt("audio-distance", 48),
                 AudioMode.fromConfig(getConfig().getString("audio-mode", "mono")),
                 getConfig().getInt("av-sync-delay-ms", 200),
@@ -202,6 +264,9 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             PacketEvents.getAPI().getEventManager().unregisterListener(controlBarListener);
             controlBarListener = null;
         }
+        if (resourcePack != null) {
+            resourcePack.disable();     // libere le port, sinon un /reload ne peut plus le rouvrir
+        }
         stopLiveStream(null);
         playlist.clear(); // rien ne doit redemarrer tout seul a l'arret
         PlaybackSession session = activeSession;
@@ -212,9 +277,28 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             session.join(2000);
         }
         activeSession = null;
+        if (postEffects != null) {
+            postEffects.clearAll(); // ce que destroy() n'aurait pas retire (viewer deja parti...)
+        }
         if (mediaCache != null) {
             mediaCache.purgeAll(); // on ne laisse pas trainer les fichiers caches
         }
+    }
+
+    // Ce qui occupe l'ecran, ou null s'il est libre. Les TROIS commandes qui demarrent une
+    // lecture doivent passer par la : un direct qui demarre n'a pas encore de session active
+    // (sa premiere tranche n'existe pas), donc tester getActiveSession() seul laisse /photo et
+    // /video play lui voler le slot -- et le direct reapparait tout seul une seconde apres
+    // l'arret de l'autre, sur SON ancre.
+    public String busyReason() {
+        PlaybackSession active = getActiveSession();
+        if (active != null) {
+            return "something is already playing (started by " + active.getInitiatorName() + ")";
+        }
+        if (isLive()) {
+            return "a live stream is running";
+        }
+        return null;
     }
 
     public PlaybackSession getActiveSession() {

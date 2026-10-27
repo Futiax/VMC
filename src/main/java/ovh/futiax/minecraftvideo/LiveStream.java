@@ -86,7 +86,7 @@ public final class LiveStream {
         // -reset_timestamps : chaque tranche repart de zero, donc chaque fichier est une video
         // autonome ordinaire -- c'est tout l'interet de l'operation.
         List<String> cmd = List.of(
-                plugin.getConfig().getString("ffmpeg-path", "ffmpeg"),
+                plugin.getTools().ffmpeg(),
                 "-hide_banner", "-loglevel", "error",
                 "-i", mediaUrl,
                 "-c", "copy",

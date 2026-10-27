@@ -30,6 +30,12 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      # Doit tourner AVANT mvn : src/main/resources/pack.zip n'est pas commite (c'est un
+      # artefact derive de pack/), donc sans cette etape le jar de release partirait sans
+      # resource pack. Meme script que ./build.sh, pour que les deux ne divergent pas.
+      - name: Build the resource pack
+        run: ./make-pack.sh
+
       - name: Build with Maven
         run: mvn -B clean package
 
@@ -68,7 +74,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # pack.zip est attache EN PLUS du jar, et pas par confort : c'est l'URL que les
+          # clients telechargent. ResourcePackService pointe par defaut sur
+          # .../releases/download/v<version>/pack.zip, donc un asset manquant = aucun joueur
+          # ne recoit le pack sur cette version.
+          assets=("target/minecraftvideo-plugin-${{ steps.version.outputs.version }}.jar")
+          [ -f src/main/resources/pack.zip ] && assets+=("src/main/resources/pack.zip")
           gh release create "v${{ steps.version.outputs.version }}" \
-            "target/minecraftvideo-plugin-${{ steps.version.outputs.version }}.jar" \
+            "${assets[@]}" \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes

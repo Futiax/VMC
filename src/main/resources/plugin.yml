@@ -11,7 +11,15 @@ softdepend: [voicechat]
 commands:
   video:
     description: Play a video on a virtual map screen.
-    usage: /video option <w> <h> [fps] | /video option audio <mono|stereo|surround> | /video play <url-or-path> [w] [h] [fps] | /video seek <+s|-s|[hh:]mm:ss> | /video subs <list|off|n> | /video stop | pause | resume | status
+    usage: /video play <url-or-path> [w] [h] [fps] | /video queue [add <src>|list|remove <n>|clear] | /video skip | /video seek <+s|-s|[hh:]mm:ss> | /video subs <list|off|n> | /video stop | pause | resume | status
+    permission: minecraftvideo.use
+  vmc:
+    description: Global settings (default screen size and fps, audio, A/V sync, render mode, subtitles).
+    usage: /vmc | /vmc <w> <h> [fps] | /vmc audio <mono|stereo|surround> | /vmc avsync <ms> | /vmc render <normal|dither|strict|data> | /vmc data <wan|lan> | /vmc sub <size|height|depth> <value>
+    permission: minecraftvideo.use
+  photo:
+    description: Display a still image on a virtual map screen.
+    usage: /photo <url-or-path> [w] [h] | /photo stop
     permission: minecraftvideo.use
   stream:
     description: Play a live stream (Twitch, YouTube live, HLS) on a virtual map screen.
@@ -20,5 +28,5 @@ commands:
 
 permissions:
   minecraftvideo.use:
-    description: Allows using the /video command.
+    description: Allows using the /video, /photo, /stream and /vmc commands.
     default: op

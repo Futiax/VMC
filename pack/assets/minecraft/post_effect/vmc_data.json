@@ -1,0 +1,330 @@
+{
+  "targets": {
+    "cand": {},
+    "tile": {
+      "width": 32,
+      "height": 32
+    },
+    "fit": {
+      "width": 4,
+      "height": 1
+    },
+    "persp": {
+      "width": 2,
+      "height": 1
+    },
+    "ascore": {
+      "width": 330,
+      "height": 33
+    },
+    "align": {
+      "width": 10,
+      "height": 1
+    },
+    "cells": {
+      "width": 430,
+      "height": 238
+    },
+    "words": {
+      "width": 512,
+      "height": 50
+    },
+    "mbstart": {
+      "width": 53,
+      "height": 29
+    },
+    "blocks": {
+      "width": 318,
+      "height": 29
+    },
+    "coefs": {
+      "width": 1272,
+      "height": 232
+    },
+    "rows": {
+      "width": 3392,
+      "height": 116
+    },
+    "img": {
+      "width": 848,
+      "height": 464
+    },
+    "out": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_seed",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "cand"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_tile",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "cand",
+          "bilinear": false
+        }
+      ],
+      "output": "tile"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_wall_fit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "tile",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Cand",
+          "target": "cand",
+          "bilinear": false
+        }
+      ],
+      "output": "fit"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_persp",
+      "inputs": [
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "persp"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_wall_align",
+      "inputs": [
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Persp",
+          "target": "persp",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "ascore"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_wall_pick",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "ascore",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Persp",
+          "target": "persp",
+          "bilinear": false
+        }
+      ],
+      "output": "align"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_wall_extract",
+      "inputs": [
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Persp",
+          "target": "persp",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Align",
+          "target": "align",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "cells"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_words",
+      "inputs": [
+        {
+          "sampler_name": "Cells",
+          "target": "cells",
+          "bilinear": false
+        }
+      ],
+      "output": "words"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_mbstart",
+      "inputs": [
+        {
+          "sampler_name": "Words",
+          "target": "words",
+          "bilinear": false
+        }
+      ],
+      "output": "mbstart"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_blocks",
+      "inputs": [
+        {
+          "sampler_name": "MbStart",
+          "target": "mbstart",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Words",
+          "target": "words",
+          "bilinear": false
+        }
+      ],
+      "output": "blocks"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_coefs",
+      "inputs": [
+        {
+          "sampler_name": "Blocks",
+          "target": "blocks",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Words",
+          "target": "words",
+          "bilinear": false
+        }
+      ],
+      "output": "coefs"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_rows",
+      "inputs": [
+        {
+          "sampler_name": "Coefs",
+          "target": "coefs",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Words",
+          "target": "words",
+          "bilinear": false
+        }
+      ],
+      "output": "rows"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_vlc_idct",
+      "inputs": [
+        {
+          "sampler_name": "Rows",
+          "target": "rows",
+          "bilinear": false
+        }
+      ],
+      "output": "img"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_data_draw",
+      "inputs": [
+        {
+          "sampler_name": "Img",
+          "target": "img",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Persp",
+          "target": "persp",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Align",
+          "target": "align",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "out"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "out",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "BlitConfig": [
+          {
+            "name": "ColorModulate",
+            "type": "vec4",
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

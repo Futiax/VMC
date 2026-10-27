@@ -1,0 +1,13 @@
+{
+  "pack": {
+    "min_format": [
+      97,
+      1
+    ],
+    "max_format": [
+      98,
+      0
+    ],
+    "description": "VMC post-effects (26.3)"
+  }
+}

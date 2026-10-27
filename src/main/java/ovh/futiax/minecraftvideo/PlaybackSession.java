@@ -70,12 +70,16 @@ public final class PlaybackSession {
     private volatile String playSource;
     private volatile java.util.function.Supplier<String> liveSource;    // null = video ordinaire
     private volatile AudioPlayback liveAudio;   // canaux SVC persistants d'un direct
-    private final int requestedWidth;
+    private final int requestedWidth;           // force au mur dataWall en rendu data
     private final int requestedHeight;
+    private final boolean sizeForced;           // rendu data et une autre taille demandee
     private final int requestedFps;
     private final AudioSettings audioSettings;
     private final boolean controlBarEnabled;    // snapshots lus dans le ctor (main thread)
-    private final boolean dither;               // passe a mcmm en --dither
+    private final RenderMode renderMode;        // --dither / --strict / --data pour mcmm
+    private final RenderMode.DataWall dataWall; // le mur du rendu data (taille et post effect)
+    private final boolean still;                // photo : une image, affichee jusqu'au stop
+    private volatile java.nio.file.Path stillClip;  // clip temporaire, supprime au stop
     private final int viewerRange;              // rayon de diffusion en blocs, 0 = illimite
     private final SubtitleSettings subtitleSettings;
 
@@ -129,7 +133,17 @@ public final class PlaybackSession {
                            int width, int height, int fps, AudioSettings audioSettings) {
         this(plugin, initiator.getUniqueId(), initiator.getName(),
                 initiator.getLocation().clone(), mcmmPath, palettePath, source,
-                width, height, fps, audioSettings);
+                width, height, fps, audioSettings, false);
+    }
+
+    // /photo : une seule image, tenue a l'ecran jusqu'a l'arret. fps 1 parce que mcmm n'a
+    // qu'une frame a sortir, audio coupe, pas de barre de controle (il n'y a rien a piloter).
+    public static PlaybackSession photo(MinecraftVideoPlugin plugin, Player initiator,
+                                        String mcmmPath, String palettePath, String source,
+                                        int width, int height) {
+        return new PlaybackSession(plugin, initiator.getUniqueId(), initiator.getName(),
+                initiator.getLocation().clone(), mcmmPath, palettePath, source,
+                width, height, 1, plugin.buildAudioSettings().muted(), true);
     }
 
     // Variante avec ancre explicite, pour la playlist : un item en file garde l'ecran la ou la
@@ -139,7 +153,17 @@ public final class PlaybackSession {
                            String initiatorName, Location anchor,
                            String mcmmPath, String palettePath, String source,
                            int width, int height, int fps, AudioSettings audioSettings) {
+        this(plugin, initiatorId, initiatorName, anchor, mcmmPath, palettePath, source,
+                width, height, fps, audioSettings, false);
+    }
+
+    private PlaybackSession(MinecraftVideoPlugin plugin, UUID initiatorId,
+                            String initiatorName, Location anchor,
+                            String mcmmPath, String palettePath, String source,
+                            int width, int height, int fps, AudioSettings audioSettings,
+                            boolean still) {
         this.plugin = plugin;
+        this.still = still;
         this.initiatorId = initiatorId;
         this.initiatorName = initiatorName;
         this.anchor = anchor;
@@ -147,16 +171,39 @@ public final class PlaybackSession {
         this.palettePath = palettePath;
         this.source = source;
         this.playSource = source;
-        this.requestedWidth = width;
-        this.requestedHeight = height;
-        this.requestedFps = fps;
-        this.audioSettings = audioSettings;
         // Les sessions sont construites sur le main thread (commande ou advance de playlist),
         // donc lire la config vivante ici ne pose pas de probleme.
-        this.controlBarEnabled = plugin.getConfig().getBoolean("control-bar-enabled", true);
-        this.dither = plugin.getConfig().getBoolean("dither", false);
+        this.renderMode = RenderMode.fromConfig(plugin.getConfig());
+        this.dataWall = RenderMode.DataWall.fromConfig(plugin.getConfig());
+        // Le decodeur client du rendu data n'existe que pour les murs de DataWall : la taille
+        // demandee (args, /vmc, file, direct) est ignoree, et start() le dit a l'initiateur.
+        boolean data = renderMode == RenderMode.DATA;
+        this.requestedWidth = data ? dataWall.width() : width;
+        this.requestedHeight = data ? dataWall.height() : height;
+        this.sizeForced = data && (width != requestedWidth || height != requestedHeight);
+        this.requestedFps = fps;
+        this.audioSettings = audioSettings;
+        // Pas de barre en rendu data : elle est en overlay sur le bas de l'image et masquerait
+        // des symboles du mur (le decodeur veut le mur entier).
+        this.controlBarEnabled = !still && !data
+                && plugin.getConfig().getBoolean("control-bar-enabled", true);
         this.viewerRange = plugin.getConfig().getInt("viewer-range-blocks", 64);
         this.subtitleSettings = plugin.buildSubtitleSettings();
+    }
+
+    // vrai pour une photo : une image, tenue a l'ecran jusqu'a l'arret (pas de seek/pause)
+    public boolean isStill() {
+        return still;
+    }
+
+    // taille d'ecran en maps demandee a mcmm, apres le forcage du rendu data : c'est elle que
+    // les messages doivent afficher, pas celle des arguments
+    public int getScreenWidth() {
+        return requestedWidth;
+    }
+
+    public int getScreenHeight() {
+        return requestedHeight;
     }
 
     // le fichier reellement lu en ce moment (une tranche de direct, ou la source resolue)
@@ -177,6 +224,10 @@ public final class PlaybackSession {
 
     // Demarre la lecture sur un thread daemon pour ces viewers initiaux (snapshot pris sur le main).
     public void start(Collection<? extends Player> initialViewers) {
+        if (sizeForced) {
+            messageInitiator("Data mode: the screen is always " + dataWall.width() + "x"
+                    + dataWall.height() + " maps (" + dataWall.configName() + " wall, /vmc data).");
+        }
         List<Player> viewers = List.copyOf(initialViewers);
         Thread thread = new Thread(() -> run(viewers), "MinecraftVideo-Playback");
         thread.setDaemon(true);
@@ -231,11 +282,28 @@ public final class PlaybackSession {
                 subtitles = null;
             }
         }
+        deleteStillClip();
         Thread thread = playbackThread;
         if (thread != null && thread != Thread.currentThread()) {
             thread.interrupt();
         }
         plugin.clearSession(this);
+    }
+
+    // Idempotent. Appele par stop() ET par le finally de run() : un stop() concurrent peut
+    // tres bien lire stillClip AVANT que le thread de lecture ne l'ait publie (ffmpeg finit en
+    // quelques dizaines de ms sur un fichier local), et le clip resterait alors orphelin.
+    private void deleteStillClip() {
+        java.nio.file.Path clip = stillClip;
+        if (clip == null) {
+            return;
+        }
+        stillClip = null;
+        try {
+            java.nio.file.Files.deleteIfExists(clip);
+        } catch (IOException ignored) {
+            // pas grave : purgePhotoClips ramassera l'orphelin au prochain demarrage
+        }
     }
 
     // Attend jusqu'a timeoutMillis que le thread de lecture se termine. Appele depuis
@@ -381,6 +449,27 @@ public final class PlaybackSession {
     // Garde la premiere image (deja envoyee) a l'ecran pendant audio-start-delay-ms de temps
     // NON pause, en restant reactif au stop/seek (verifie toutes les <=50 ms) et a la pause
     // (qui rallonge le gel).
+    // Park le thread de lecture jusqu'a stop(). stop() interrompt ce thread, donc le reveil
+    // est immediat ; le timeout n'est qu'une ceinture de securite.
+    private void awaitStop() {
+        while (!stopped.get()) {
+            LockSupport.parkNanos(2_000_000_000L);
+            if (Thread.interrupted()) {
+                return;
+            }
+            // Une photo n'envoie qu'UNE image : un viewer dont la socket etait pleine a cet
+            // instant-la garde une dette que plus aucune frame ne viendrait solder. On la
+            // repousse ici. Pour les viewers a jour c'est zero octet (voir resendMissed).
+            VirtualScreen scr;
+            synchronized (lock) {
+                scr = screen;
+            }
+            if (scr != null && !stopped.get()) {
+                scr.resendMissed();     // hors du lock, comme la boucle de frames
+            }
+        }
+    }
+
     private void freezeFirstFrame() {
         long remaining = Math.max(0, audioSettings.audioStartDelayMillis()) * 1_000_000L;
         while (remaining > 0 && !stopped.get() && pendingSeekMillis.get() < 0) {
@@ -462,10 +551,11 @@ public final class PlaybackSession {
 
         return new String[] {
             "Source: " + shortSource() + (paused.get() ? "  [PAUSED]" : ""),
-            // le dither est affiche parce qu'il se paie sur le decodage mcmm : l'oublier
+            // le rendu est affiche parce qu'il se paie sur le decodage mcmm : oublier le dither
             // allume, c'est chercher une regression de perf dans le mauvais processus
             "Screen: " + screenW + "x" + screenH + " maps @ " + fps + " fps, audio "
-                    + audioSettings.mode().configName() + (dither ? ", dither ON" : ""),
+                    + audioSettings.mode().configName()
+                    + (renderMode != RenderMode.NORMAL ? ", render " + renderMode.configName() : ""),
             "Position: " + formatTimestamp(getPositionMillis())
                     + String.format(" — %d frames this segment, %.1f effective fps", frames, effFps),
             String.format("Generation: %.1f ms/frame (decode %.1f + send %.1f) vs %.1f ms budget",
@@ -515,12 +605,54 @@ public final class PlaybackSession {
                 return; // le finally tourne quand meme : stop() + release du cache
             }
 
+            if (still) {
+                // mcmm ne lit pas une image fixe : on la passe par un clip d'une seconde.
+                // Bloquant, mais on est sur le thread de lecture.
+                try {
+                    java.nio.file.Path clip = StillClip.build(audioSettings.ffmpegPath(),
+                            playSource, plugin.getDataFolder().toPath(),
+                            renderMode == RenderMode.STRICT);
+                    this.stillClip = clip;
+                    this.playSource = clip.toString();
+                } catch (IOException e) {
+                    if (!stopped.get()) {
+                        plugin.getLogger().warning("Could not prepare the image (" + source
+                                + "): " + e.getMessage());
+                        messageInitiator("Could not read that image.");
+                    }
+                    return;
+                }
+            }
+
             long offsetMillis = 0;
             boolean first = true;
             while (!stopped.get()) {
                 long next = playSegment(initialViewers, offsetMillis, first);
                 first = false;
                 if (next < 0) {
+                    if (still) {
+                        if (framesSent == 0) {
+                            // mcmm a sorti son header mais aucune image : se garer la
+                            // laisserait un ecran VIDE et le slot de session pris, sans un mot.
+                            plugin.getLogger().warning("No frame produced for image "
+                                    + source);
+                            // en strict, la cause la plus probable est le plafond de mcmm
+                            // (8192 px de cote, ou une image trop allongee) : le dire au joueur,
+                            // sinon rien ne lui souffle que le rendu normal passerait
+                            messageInitiator(renderMode == RenderMode.STRICT
+                                    ? "Could not display that image in strict render mode"
+                                            + " (over 8192 px per side, or too elongated for"
+                                            + " this screen). /vmc render normal"
+                                            + " would scale it."
+                                    : "Could not display that image.");
+                            break;  // le finally stop() libere l'ecran et le slot
+                        }
+                        // L'image est envoyee, mcmm a fini : on garde la session (donc l'ecran
+                        // et ses viewers) en vie jusqu'a l'arret explicite. C'est TOUTE la
+                        // difference entre une photo et une video d'une frame.
+                        awaitStop();
+                        break;
+                    }
                     // EOF : sur un direct, ce n'est pas la fin, juste la tranche suivante a
                     // prendre. On garde la session (donc l'ecran) et on repart a zero sur le
                     // nouveau fichier.
@@ -534,7 +666,7 @@ public final class PlaybackSession {
                 }
                 offsetMillis = next;
             }
-            if (!stopped.get() && liveSource == null) {
+            if (!stopped.get() && liveSource == null && !still) {
                 messageInitiator("Video finished.");
             }
         } catch (IOException e) {
@@ -547,6 +679,7 @@ public final class PlaybackSession {
             t.printStackTrace();
         } finally {
             stop(); // arret auto en EOF ou sur erreur, idempotent
+            deleteStillClip(); // apres stop() : un stop() concurrent a pu passer avant la publication
             // Release de la reference de cache de cette occurrence APRES stop(), pour que les
             // pipelines aient fini de lire le fichier avant qu'il puisse etre supprime.
             plugin.getMediaCache().release(source);
@@ -594,9 +727,9 @@ public final class PlaybackSession {
 
         // On lance le sous-process puis on le publie AVANT la lecture bloquante du header,
         // comme ca un stop()/seekTo() concurrent peut tuer mcmm et nous debloquer.
-        McmmStream newStream = new McmmStream(plugin.getLogger(),
+        McmmStream newStream = new McmmStream(plugin.getLogger(), plugin.getTools(),
                 mcmmPath, palettePath, playSource,
-                requestedWidth, requestedHeight, requestedFps, offsetMillis, dither);
+                requestedWidth, requestedHeight, requestedFps, offsetMillis, renderMode);
         synchronized (lock) {
             if (stopped.get()) {
                 newStream.close();
@@ -621,7 +754,8 @@ public final class PlaybackSession {
                 // le spawn sous le lock pour que ca ne s'entrelace pas avec destroy().
                 scr = new VirtualScreen(anchor,
                         newStream.getMapWidth(), newStream.getMapHeight(),
-                        controlBarEnabled, subtitleSettings, viewerRange);
+                        controlBarEnabled, subtitleSettings, viewerRange,
+                        plugin.getPostEffects(), plugin.getPostEffects().effectFor(renderMode, dataWall));
                 synchronized (lock) {
                     if (stopped.get()) {
                         return -1; // stop() a deja ferme le stream

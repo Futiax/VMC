@@ -67,12 +67,15 @@ public final class ControlBarListener implements PacketListener {
         if (button == null) {
             // TODO virer ce log une fois la barre reconfirmee en jeu : c'est le diagnostic du
             // "les boutons ne font rien". Un clic sur l'ecran lui-meme tombe ici aussi, donc
-            // c'est de l'INFO, pas un warning.
-            plugin.getLogger().info("Interact on fake entity " + entityId
+            // c'est de l'INFO, pas un warning. Pas de barre (photo, ou option coupee) = pas de
+            // bouton rate : sans ce filtre, cliquer sur une photo spammerait la console.
+            if (bar != null) {
+                plugin.getLogger().info("Interact on fake entity " + entityId
                     + " matched no button (session=" + (session != null)
                     + ", bar=" + (bar != null)
-                    + ", barIds=" + (bar != null ? Arrays.toString(bar.getEntityIds()) : "-")
+                    + ", barIds=" + Arrays.toString(bar.getEntityIds())
                     + ")");
+            }
             return; // frame d'ecran ou id de barre perime, rien a faire
         }
 
