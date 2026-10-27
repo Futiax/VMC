@@ -3,6 +3,7 @@ package ovh.futiax.minecraftvideo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.IllegalPluginAccessException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -61,13 +62,23 @@ public final class ResourcePackService {
     private final boolean required;
     private final String prompt;
 
-    private byte[] zip;                 // contenu du pack, null tant qu'on n'est pas pret
-    private byte[] sha1;                // hash binaire attendu par addResourcePack
-    private String sha1Hex;             // meme hash, pour l'URL en selfhost et les logs
-    private UUID packId;                // derive du hash : stable tant que le pack ne change pas
+    private byte[] zip;                 // pack embarque, sert le selfhost et le repli
+    private byte[] bundledSha1;         // hash du pack embarque
+    private String sha1Hex;             // hash ANNONCE, en hex (URL du selfhost, logs)
     private String fixedUrl;            // l'URL commune (null en selfhost : elle est par joueur)
     private HttpServer server;
     private final AtomicBoolean hostWarned = new AtomicBoolean();
+
+    // Hash reellement annonce aux clients et id qui en derive. En mode URL ils viennent du
+    // fichier TELECHARGE depuis cette URL, pas du pack embarque : le client valide son
+    // telechargement contre ce hash, donc le seul hash correct est celui du fichier qu'il
+    // recoit. C'est ce qui rend l'ensemble insensible au fait que la CI rezippe le pack sur une
+    // autre machine (implementations de `zip` differentes -> memes fichiers, zip byte-different).
+    private volatile byte[] sendSha1;
+    private volatile UUID packId;
+    // false tant qu'on ne connait pas le hash a annoncer : send() ne pousse rien, et les joueurs
+    // deja connectes sont servis par le rattrapage de resolve().
+    private volatile boolean ready;
 
     public ResourcePackService(MinecraftVideoPlugin plugin) {
         this.plugin = plugin;
@@ -88,14 +99,26 @@ public final class ResourcePackService {
             return;
         }
         if (selfhost) {
+            // On sert nous-memes le pack embarque : son hash EST celui du fichier servi.
+            publish(bundledSha1);
             startServer();
             return;
         }
         fixedUrl = urlOverride.isBlank()
                 ? RELEASE_BASE + plugin.getPluginMeta().getVersion() + ASSET
                 : urlOverride;
-        plugin.getLogger().info("Resource pack: " + fixedUrl + " (sha1 " + sha1Hex + ")");
-        verifyAsync(fixedUrl);
+        plugin.getLogger().info("Resource pack: " + fixedUrl);
+        resolveAsync(fixedUrl);
+    }
+
+    // Fixe le hash a annoncer et l'id qui en derive. L'id vient du hash, donc il ne change que
+    // si le pack change : un joueur qui rejoint ne re-telecharge rien, et un pack mis a jour
+    // remplace proprement l'ancien.
+    private void publish(byte[] hash) {
+        sendSha1 = hash;
+        packId = UUID.nameUUIDFromBytes(hash);
+        sha1Hex = HexFormat.of().formatHex(hash);
+        ready = true;
     }
 
     public void disable() {
@@ -111,8 +134,8 @@ public final class ResourcePackService {
     // rendre le serveur injoignable si l'URL est fausse (avec required, un pack inaccessible
     // deconnecte tout le monde a la connexion).
     public void send(Player player) {
-        if (zip == null) {
-            return;
+        if (zip == null || !ready) {
+            return;     // hash pas encore connu : catchUp() repassera sur ce joueur
         }
         String url = fixedUrl != null ? fixedUrl : selfhostUrl(player);
         if (url == null) {
@@ -122,7 +145,7 @@ public final class ResourcePackService {
             }
             return;
         }
-        player.addResourcePack(packId, url, sha1, prompt, required);
+        player.addResourcePack(packId, url, sendSha1, prompt, required);
     }
 
     // Lit le pack embarque et calcule son hash. false = pas de pack dans ce jar (make-pack.sh
@@ -142,31 +165,27 @@ public final class ResourcePackService {
             return false;
         }
         try {
-            sha1 = MessageDigest.getInstance("SHA-1").digest(zip);
+            bundledSha1 = MessageDigest.getInstance("SHA-1").digest(zip);
         } catch (NoSuchAlgorithmException e) {
             // SHA-1 est obligatoire dans toute JVM ; si on arrive ici, autant le dire.
             plugin.getLogger().warning("SHA-1 indisponible sur cette JVM : pack non pousse.");
             zip = null;
             return false;
         }
-        sha1Hex = HexFormat.of().formatHex(sha1);
-        // Id derive du contenu : il ne change que si le pack change, donc un joueur qui rejoint
-        // ne re-telecharge rien, et un pack mis a jour remplace proprement l'ancien.
-        packId = UUID.nameUUIDFromBytes(sha1);
         return true;
     }
 
-    // Verifie que le fichier a l'URL est BIT POUR BIT celui qu'on embarque. On annonce le hash
-    // du pack embarque, donc le moindre octet d'ecart fait rejeter le pack par le client --
-    // silencieusement cote serveur. Sans ce controle, un asset de release oublie ou un pack/
-    // modifie sans rebump ne se verrait qu'en jeu, pack par pack. En tache de fond : onEnable
-    // n'attend pas, et un echec reseau ne doit rien casser.
-    private void verifyAsync(String url) {
+    // Telecharge le pack a l'URL et annonce LE HASH DE CE FICHIER-LA. Le client valide son
+    // propre telechargement contre le hash qu'on lui donne : le seul hash correct est donc
+    // celui du fichier qu'il va recevoir, pas celui du pack qu'on embarque. Les deux diffèrent
+    // des que la CI rezippe pack/ sur une autre machine -- memes fichiers, zip byte-different,
+    // car les implementations de `zip` n'ont pas le meme deflate. Hasher la source de verite
+    // supprime le probleme au lieu d'exiger une reproductibilite inter-machines.
+    //
+    // En tache de fond : onEnable n'attend pas. Un echec retombe sur le hash du pack embarque,
+    // ce qui n'est pas pire que de ne rien pousser.
+    private void resolveAsync(String url) {
         Thread thread = new Thread(() -> {
-            byte[] expected = sha1;
-            if (expected == null) {
-                return;
-            }
             try {
                 HttpClient http = HttpClient.newBuilder()
                         .followRedirects(HttpClient.Redirect.NORMAL)   // GitHub -> CDN d'assets
@@ -181,33 +200,61 @@ public final class ResourcePackService {
                 if (response.statusCode() != 200) {
                     plugin.getLogger().warning("Le resource pack n'est pas telechargeable (HTTP "
                             + response.statusCode() + ") : " + url
-                            + " -- les joueurs ne le recevront pas."
-                            + " Verifie que l'asset pack.zip est bien attache a la release,"
-                            + " ou passe en resource-pack-selfhost.");
+                            + ". Verifie que l'asset pack.zip est bien attache a la release."
+                            + " On annonce quand meme le hash du pack embarque, au cas ou l'URL"
+                            + " serait joignable par les joueurs mais pas par le serveur.");
+                    fallback();
                     return;
                 }
                 byte[] remote = MessageDigest.getInstance("SHA-1").digest(response.body());
-                if (!Arrays.equals(remote, expected)) {
-                    plugin.getLogger().warning("Le resource pack a cette URL ne correspond PAS a"
-                            + " celui embarque dans ce jar : les clients le rejetteront."
-                            + " attendu " + sha1Hex + ", trouve " + HexFormat.of().formatHex(remote)
-                            + " (" + url + ")");
-                    return;
+                publish(remote);
+                if (Arrays.equals(remote, bundledSha1)) {
+                    plugin.getLogger().info("Resource pack pret (sha1 " + sha1Hex
+                            + ", identique au pack embarque).");
+                } else {
+                    // Normal : la CI rezippe pack/ et son `zip` ne produit pas les memes octets.
+                    // Le contenu est le meme, seul l'emballage differe -- on annonce le hash du
+                    // fichier servi, donc les clients sont bons. Trace quand meme : si le
+                    // CONTENU divergeait vraiment, c'est ici qu'on commencerait a chercher.
+                    plugin.getLogger().info("Resource pack pret (sha1 " + sha1Hex
+                            + "). L'asset distant n'est pas bit pour bit celui du jar ("
+                            + HexFormat.of().formatHex(bundledSha1) + ") : attendu quand le zip"
+                            + " a ete refait par la CI. C'est le hash distant qui est annonce.");
                 }
-                plugin.getLogger().info("Resource pack verifie : l'URL sert bien le pack de ce jar.");
+                catchUp();
             } catch (IOException e) {
-                // Pas joignable d'ici ne veut pas dire pas joignable par les joueurs (sortie
-                // reseau filtree cote serveur), donc on informe sans alarmer.
-                plugin.getLogger().info("Verification du resource pack impossible ("
-                        + e.getMessage() + ") ; l'URL est quand meme poussee aux joueurs.");
+                // Injoignable d'ici ne veut pas dire injoignable par les joueurs (sortie reseau
+                // filtree cote serveur), donc on informe sans alarmer et on tente le repli.
+                plugin.getLogger().info("Resolution du resource pack impossible ("
+                        + e.getMessage() + ") ; on annonce le hash du pack embarque.");
+                fallback();
             } catch (NoSuchAlgorithmException e) {
                 // deja signale par load()
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        }, "MinecraftVideo-pack-verify");
+        }, "MinecraftVideo-pack-resolve");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    // Faute de mieux : le hash du pack embarque. Si l'asset distant en differe, les clients
+    // rejetteront le pack -- mais ne rien pousser serait tout aussi inutile, et sur un serveur
+    // dont seule la sortie reseau est filtree ce repli est correct.
+    private void fallback() {
+        publish(bundledSha1);
+        catchUp();
+    }
+
+    // Les joueurs connectes AVANT que le hash soit connu : send() ne leur avait rien pousse.
+    // Sur le main thread, l'API Bukkit n'etant pas thread-safe.
+    private void catchUp() {
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () ->
+                    plugin.getServer().getOnlinePlayers().forEach(this::send));
+        } catch (IllegalStateException | IllegalPluginAccessException e) {
+            // plugin en cours de desactivation : il n'y a plus personne a rattraper
+        }
     }
 
     private void startServer() {
