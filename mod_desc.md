@@ -65,8 +65,10 @@ All commands require the `minecraftvideo.use` permission (default: OP). Once a v
 
 ### Options & Configuration
 Use `/vmc` to see or change the global settings (they persist in `config.yml` and apply to the next `/video play`):
-- `/vmc <width> <height> [fps]`
-  *Sets the default screen size (in maps, e.g. 4×3) and frame rate (up to 20 fps).*
+- `/vmc size <width> <height>`
+  *Sets the default screen size (in maps, e.g. 4×3).*
+- `/vmc fps <n>`
+  *Sets the default frame rate (up to 20 fps).*
 - `/vmc audio <mono|stereo|surround>`
   *Switches the spatial audio mode.*
 - `/vmc avsync <ms>`

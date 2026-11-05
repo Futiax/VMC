@@ -13,6 +13,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -33,11 +34,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 // et il faut une URL que les clients joignent.
 //
 // DEUX modes :
-//   - URL (defaut) : l'asset pack.zip de la release GitHub de CETTE version du plugin, attache
-//     par la CI. Rien a ouvrir, rien a configurer, et ca marche pour tout le monde. L'URL est
-//     derivee de la version a l'execution, et PAS mise en dur dans le config.yml : un admin qui
-//     met a jour garde son config.yml (saveDefaultConfig ne le reecrit pas) et resterait pointe
-//     sur l'ancienne release, dont le hash ne correspondrait plus au pack embarque.
+//   - URL (defaut) : l'asset pack.zip de la release GitHub pack-<empreinte>, publiee a part par
+//     la CI (<empreinte> = contenu du pack, pack.id ecrit par make-pack.sh). Rien a ouvrir, rien a
+//     configurer. Une mise a jour du plugin qui ne touche pas au pack garde donc la meme URL et le
+//     meme hash : un build de test marche sans release, et les joueurs ne re-telechargent rien.
+//     L'URL n'est PAS mise en dur dans le config.yml : un admin qui met a jour garde son
+//     config.yml (saveDefaultConfig ne le reecrit pas) et resterait sur l'ancien pack.
 //   - selfhost : un HttpServer du JDK sur resource-pack-port, et chaque joueur recoit une URL
 //     batie sur l'hote qu'IL a utilise pour se connecter (NetworkClient#getVirtualHost). Pour
 //     un serveur sans acces internet sortant cote joueurs. Demande que ce port -- qui n'est pas
@@ -48,8 +50,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 // traversee de repertoire possible.
 public final class ResourcePackService {
 
-    // Les releases du plugin. L'asset pack.zip y est attache par .github/workflows/build.yml.
-    private static final String RELEASE_BASE = "https://github.com/Futiax/VMC/releases/download/v";
+    // Les releases du pack, creees par .github/workflows/build.yml, une par contenu.
+    private static final String RELEASE_BASE = "https://github.com/Futiax/VMC/releases/download/pack-";
     private static final String ASSET = "/pack.zip";
 
     private static final int STOP_DELAY_SECONDS = 1;
@@ -63,6 +65,7 @@ public final class ResourcePackService {
     private final String prompt;
 
     private byte[] zip;                 // pack embarque, sert le selfhost et le repli
+    private String contentId;           // empreinte du pack embarque (pack.id), null si absente
     private byte[] bundledSha1;         // hash du pack embarque
     private String sha1Hex;             // hash ANNONCE, en hex (URL du selfhost, logs)
     private String fixedUrl;            // l'URL commune (null en selfhost : elle est par joueur)
@@ -104,9 +107,13 @@ public final class ResourcePackService {
             startServer();
             return;
         }
-        fixedUrl = urlOverride.isBlank()
-                ? RELEASE_BASE + plugin.getPluginMeta().getVersion() + ASSET
-                : urlOverride;
+        if (urlOverride.isBlank() && contentId == null) {
+            plugin.getLogger().warning("pack.id absent de ce jar : URL du resource pack inconnue."
+                    + " Renseigne resource-pack-url, ou rebuild avec ./build.sh.");
+            zip = null;
+            return;
+        }
+        fixedUrl = urlOverride.isBlank() ? RELEASE_BASE + contentId + ASSET : urlOverride;
         plugin.getLogger().info("Resource pack: " + fixedUrl);
         resolveAsync(fixedUrl);
     }
@@ -164,6 +171,11 @@ public final class ResourcePackService {
                     + e.getMessage());
             return false;
         }
+        try (InputStream in = plugin.getResource("pack.id")) {
+            contentId = in == null ? null : new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+        } catch (IOException e) {
+            contentId = null;
+        }
         try {
             bundledSha1 = MessageDigest.getInstance("SHA-1").digest(zip);
         } catch (NoSuchAlgorithmException e) {
@@ -200,7 +212,9 @@ public final class ResourcePackService {
                 if (response.statusCode() != 200) {
                     plugin.getLogger().warning("Le resource pack n'est pas telechargeable (HTTP "
                             + response.statusCode() + ") : " + url
-                            + ". Verifie que l'asset pack.zip est bien attache a la release."
+                            + ". Normal si le pack a change et n'est pas encore pousse (la CI"
+                            + " publie la release du pack au push) : en attendant, teste avec"
+                            + " resource-pack-selfhost."
                             + " On annonce quand meme le hash du pack embarque, au cas ou l'URL"
                             + " serait joignable par les joueurs mais pas par le serveur.");
                     fallback();

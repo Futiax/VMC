@@ -12,6 +12,12 @@ modifications.
 normalisées et entrées triées, pour que le SHA-1 ne change que si le contenu change — les clients
 cachent le pack par son hash). Le zip généré n'est pas à commiter.
 
+Le pack a **ses propres releases GitHub**, `pack-<empreinte>`, où l'empreinte vient du contenu
+(`src/main/resources/pack.id`, écrit par `make-pack.sh`). La CI crée la release au push si elle
+n'existe pas encore, et le plugin en déduit son URL. Modifier seulement le plugin ne change donc ni
+l'URL ni le hash. Modifier le pack donne une URL en 404 jusqu'au push : pour tester avant, utiliser
+`resource-pack-selfhost`. Ne pas supprimer ces releases : les anciennes versions du plugin s'en servent.
+
 ## Structure
 
 ```

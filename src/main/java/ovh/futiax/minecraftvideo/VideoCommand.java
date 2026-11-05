@@ -461,7 +461,7 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("  /" + label + " seek <+s|-s|[hh:]mm:ss>  — skip / jump to timestamp");
         sender.sendMessage("  /" + label + " subs <list|off|n>  — embedded subtitle overlay");
         sender.sendMessage("  /" + label + " stop | pause | resume | status");
-        sender.sendMessage("Settings (default size, audio, sync, render, subtitles): /vmc");
+        sender.sendMessage("Settings (default size, fps, audio, sync, render, subtitles): /vmc");
     }
 
     @Override

@@ -22,7 +22,7 @@ post-effect: ""
 
 # Default screen size in maps (each map is 128x128 pixels) and default fps,
 # used when /video play is called without explicit [w] [h] [fps] arguments.
-# Change in-game with /vmc <w> <h> [fps].
+# Change in-game with /vmc size <w> <h> and /vmc fps <n>.
 default-width: 4
 default-height: 3
 default-fps: 10
@@ -214,18 +214,16 @@ ffmpeg-autodownload: true
 # --- Resource pack (the VMC post effects, needed by render-mode: data) ---
 # The pack ships INSIDE this jar. Minecraft never transfers a pack over the game
 # protocol: the server sends a URL and a SHA-1, and the client fetches the zip
-# over HTTP. So the plugin serves it itself from a tiny built-in HTTP server and
-# hands each player a URL built from the host THEY used to connect -- nothing to
+# over HTTP. By default that URL is the pack's own GitHub release -- nothing to
 # host, nothing to configure.
 resource-pack: true
 
-# Explicit URL of the pack zip. Leave EMPTY to use the pack.zip asset of THIS
-# plugin version's GitHub release, which is what you want in almost every case:
-# nothing to open, nothing to host. The URL is derived from the running version,
-# so an upgrade follows along on its own -- that is why it is not written out
-# here (your config.yml is never overwritten, so a hardcoded URL would keep
-# pointing at the release you first installed, and its pack would no longer
-# match this jar's hash).
+# Explicit URL of the pack zip. Leave EMPTY to use the GitHub release of the pack
+# this jar was built with, which is what you want in almost every case: nothing to
+# open, nothing to host. The URL is derived from the pack's content, so an upgrade
+# follows along on its own -- that is why it is not written out here (your
+# config.yml is never overwritten, so a hardcoded URL would keep pointing at the
+# pack you first installed).
 resource-pack-url: ""
 
 # Serve the pack from a tiny HTTP server inside the plugin instead of fetching

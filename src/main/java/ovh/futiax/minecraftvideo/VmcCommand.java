@@ -13,7 +13,9 @@ import java.util.Locale;
 // suivante. Ils vivaient sous /video option : des reglages de serveur sous la commande qui
 // pilote UNE video, c'etait bizarre.
 // /vmc                                       affiche les reglages
-// /vmc <width> <height> [fps]                taille et fps par defaut de /video play
+// /vmc size <width> <height>                 taille d'ecran par defaut (maps)
+// /vmc fps <n>                               fps par defaut, separes de la taille : en rendu data
+//                                            la taille est imposee par le mur, seuls les fps se reglent
 // /vmc audio <mono|stereo|surround>          mode audio
 // /vmc avsync <ms>                           delai de sync A/V
 // /vmc render <normal|dither|strict|data>    rendu des couleurs ("dither" = ancien nom)
@@ -21,7 +23,7 @@ import java.util.Locale;
 // /vmc sub <size|height|depth> <valeur>      geometrie de l'overlay sous-titres
 public final class VmcCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> KEYWORDS = List.of("audio", "avsync", "data", "render", "sub");
+    private static final List<String> KEYWORDS = List.of("audio", "avsync", "data", "fps", "render", "size", "sub");
 
     private final MinecraftVideoPlugin plugin;
 
@@ -38,52 +40,56 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
             case "render", "dither" -> handleRender(sender, label, args);
             case "data" -> handleData(sender, label, args);
             case "sub", "subs", "subtitle" -> handleSub(sender, label, args);
-            default -> handleScreen(sender, label, args);
+            case "size" -> handleSize(sender, label, args);
+            case "fps" -> handleFps(sender, label, args);
+            default -> showSettings(sender, label);
         }
         return true;
     }
 
-    // /vmc [<width> <height> [fps]] : affiche tout, ou regle et persiste la taille / les fps
-    private void handleScreen(CommandSender sender, String label, String[] args) {
-        int curW = plugin.getConfig().getInt("default-width", 4);
-        int curH = plugin.getConfig().getInt("default-height", 3);
-        int curFps = plugin.getConfig().getInt("default-fps", 10);
-        String curMode = AudioMode.fromConfig(
-                plugin.getConfig().getString("audio-mode", "mono")).configName();
-        int curAvsync = plugin.getConfig().getInt("av-sync-delay-ms", 200);
-
-        // en rendu data la taille sauvegardee n'est pas celle de l'ecran : on le dit
+    // en rendu data la taille sauvegardee n'est pas celle de l'ecran : on le dit
+    private String dataSizeNote() {
         RenderMode.DataWall wall = RenderMode.DataWall.fromConfig(plugin.getConfig());
-        String dataNote = RenderMode.fromConfig(plugin.getConfig()) == RenderMode.DATA
+        return RenderMode.fromConfig(plugin.getConfig()) == RenderMode.DATA
                 ? " (render data: the screen is always the " + wall.configName() + " wall, "
                         + wall.width() + "x" + wall.height() + " maps)"
                 : "";
-        if (args.length < 2) {
-            sender.sendMessage("[MinecraftVideo] Settings: "
-                    + curW + "x" + curH + " maps @ " + curFps + " fps, audio " + curMode
-                    + ", avsync " + curAvsync + " ms, render "
-                    + RenderMode.fromConfig(plugin.getConfig()).configName() + dataNote);
-            sender.sendMessage("Set with: /" + label + " <width> <height> [fps]");
-            sender.sendMessage("      or: /" + label + " audio <mono|stereo|surround>");
-            sender.sendMessage("      or: /" + label + " avsync <ms>");
-            sender.sendMessage("      or: /" + label + " render <normal|dither|strict|data>");
-            sender.sendMessage("      or: /" + label + " data <wan|lan>");
-            sender.sendMessage("      or: /" + label + " sub <size|height|depth> <value>");
+    }
+
+    // /vmc : affiche tout
+    private void showSettings(CommandSender sender, String label) {
+        sender.sendMessage("[MinecraftVideo] Settings: "
+                + plugin.getConfig().getInt("default-width", 4) + "x"
+                + plugin.getConfig().getInt("default-height", 3) + " maps @ "
+                + plugin.getConfig().getInt("default-fps", 10) + " fps, audio "
+                + AudioMode.fromConfig(plugin.getConfig().getString("audio-mode", "mono")).configName()
+                + ", avsync " + plugin.getConfig().getInt("av-sync-delay-ms", 200) + " ms, render "
+                + RenderMode.fromConfig(plugin.getConfig()).configName() + dataSizeNote());
+        sender.sendMessage("Set with: /" + label + " size <width> <height>");
+        sender.sendMessage("      or: /" + label + " fps <1-" + VideoCommand.MAX_FPS + ">");
+        sender.sendMessage("      or: /" + label + " audio <mono|stereo|surround>");
+        sender.sendMessage("      or: /" + label + " avsync <ms>");
+        sender.sendMessage("      or: /" + label + " render <normal|dither|strict|data>");
+        sender.sendMessage("      or: /" + label + " data <wan|lan>");
+        sender.sendMessage("      or: /" + label + " sub <size|height|depth> <value>");
+    }
+
+    // /vmc size [<width> <height>] : affiche ou regle/persiste la taille d'ecran par defaut
+    private void handleSize(CommandSender sender, String label, String[] args) {
+        if (args.length < 3) {
+            sender.sendMessage("[MinecraftVideo] Default screen size: "
+                    + plugin.getConfig().getInt("default-width", 4) + "x"
+                    + plugin.getConfig().getInt("default-height", 3) + " maps" + dataSizeNote() + ".");
+            sender.sendMessage("Set with: /" + label + " size <width> <height>");
             return;
         }
-
         int width;
         int height;
-        int fps = curFps;
         try {
-            width = Integer.parseInt(args[0]);
-            height = Integer.parseInt(args[1]);
-            if (args.length >= 3) {
-                fps = Integer.parseInt(args[2]);
-            }
+            width = Integer.parseInt(args[1]);
+            height = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
-            sender.sendMessage("<width>, <height> and [fps] must be whole numbers"
-                    + " (or use /" + label + " audio|avsync|render|data|sub).");
+            sender.sendMessage("<width> and <height> must be whole numbers.");
             return;
         }
         if (width < 1 || width > VideoCommand.MAX_DIMENSION
@@ -92,17 +98,36 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
                     + VideoCommand.MAX_DIMENSION + "x" + VideoCommand.MAX_DIMENSION + " maps.");
             return;
         }
+        plugin.getConfig().set("default-width", width);
+        plugin.getConfig().set("default-height", height);
+        plugin.saveConfig();
+        sender.sendMessage("[MinecraftVideo] Default screen size saved: " + width + "x" + height
+                + " maps" + dataSizeNote() + ". Applies to the next /video play, /photo or /stream.");
+    }
+
+    // /vmc fps [n] : affiche ou regle/persiste les fps par defaut
+    private void handleFps(CommandSender sender, String label, String[] args) {
+        int cur = plugin.getConfig().getInt("default-fps", 10);
+        if (args.length < 2) {
+            sender.sendMessage("[MinecraftVideo] Default frame rate: " + cur + " fps.");
+            sender.sendMessage("Set with: /" + label + " fps <1-" + VideoCommand.MAX_FPS + ">");
+            return;
+        }
+        int fps;
+        try {
+            fps = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage("<fps> must be a whole number.");
+            return;
+        }
         if (fps < 1 || fps > VideoCommand.MAX_FPS) {
             sender.sendMessage("fps must be between 1 and " + VideoCommand.MAX_FPS + ".");
             return;
         }
-
-        plugin.getConfig().set("default-width", width);
-        plugin.getConfig().set("default-height", height);
         plugin.getConfig().set("default-fps", fps);
         plugin.saveConfig();
-        sender.sendMessage("[MinecraftVideo] Saved: " + width + "x" + height
-                + " maps @ " + fps + " fps — used by /video play." + dataNote);
+        sender.sendMessage("[MinecraftVideo] Default frame rate saved: " + fps + " fps (was " + cur
+                + "). Bandwidth and server load follow it. Applies to the next /video play or /stream.");
     }
 
     // /vmc audio [mono|stereo|surround] : affiche ou regle/persiste le mode audio
@@ -176,7 +201,7 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
 
     // /vmc data [wan|lan] : affiche ou regle/persiste le mur du rendu data (RenderMode.DataWall).
     // lan = plus de donnees donc une meilleure image, mais deux fois le debit du wan, et un mur
-    // qui ne se lit en 1080p que d'une plage etroite (4,3 a 4,8 blocs en FOV 70)
+    // qui ne se lit en 1080p que d'une plage etroite (2,1 a 3,1 blocs en FOV 70)
     private void handleData(CommandSender sender, String label, String[] args) {
         RenderMode.DataWall cur = RenderMode.DataWall.fromConfig(plugin.getConfig());
         if (args.length < 2) {
@@ -283,7 +308,6 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
-            // les mots-cles ; la largeur est numerique, rien a proposer
             return startingWith(KEYWORDS, args[0]);
         }
         if (args.length == 2) {
@@ -293,6 +317,7 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
                 case "data" -> startingWith(RenderMode.DataWall.configNames(), args[1]);
                 case "sub" -> startingWith(List.of("size", "height", "depth"), args[1]);
                 case "avsync" -> startingWith(List.of("0", "100", "200", "300", "500"), args[1]);
+                case "fps" -> startingWith(List.of("5", "10", "15", "20"), args[1]);
                 default -> List.of();
             };
         }

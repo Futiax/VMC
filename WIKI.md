@@ -41,12 +41,17 @@ All commands require the `minecraftvideo.use` permission (default: OP).
 
 The `/vmc` command shows (with no argument) or sets the plugin's global settings on the fly. They are persisted to the server's `config.yml` and apply to the next `/video play`, `/photo` or `/stream`.
 
-### Screen Size & FPS
+### Screen Size
 ```
-/vmc <width> <height> [fps]
+/vmc size <width> <height>
 ```
-- **`<width>` and `<height>`**: Dimension in Minecraft maps (1 to 16). Each map is 128x128 pixels.
-- **`[fps]`**: Frame rate limit (1 to 20 FPS). Default is 10.
+- **`<width>` and `<height>`**: Dimension in Minecraft maps (1 to 16). Each map is 128x128 pixels. Ignored by `/vmc render data`, whose size is set by the wall.
+
+### Frame Rate
+```
+/vmc fps <n>
+```
+- **`<n>`**: Frame rate (1 to 20 FPS). Default is 10. Bandwidth and server load follow it.
 
 ### Audio Configuration
 ```

@@ -15,7 +15,7 @@ commands:
     permission: minecraftvideo.use
   vmc:
     description: Global settings (default screen size and fps, audio, A/V sync, render mode, subtitles).
-    usage: /vmc | /vmc <w> <h> [fps] | /vmc audio <mono|stereo|surround> | /vmc avsync <ms> | /vmc render <normal|dither|strict|data> | /vmc data <wan|lan> | /vmc sub <size|height|depth> <value>
+    usage: /vmc | /vmc size <w> <h> | /vmc fps <n> | /vmc audio <mono|stereo|surround> | /vmc avsync <ms> | /vmc render <normal|dither|strict|data> | /vmc data <wan|lan> | /vmc sub <size|height|depth> <value>
     permission: minecraftvideo.use
   photo:
     description: Display a still image on a virtual map screen.

@@ -30,14 +30,33 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Doit tourner AVANT mvn : src/main/resources/pack.zip n'est pas commite (c'est un
-      # artefact derive de pack/), donc sans cette etape le jar de release partirait sans
+      # Doit tourner AVANT mvn : pack.zip et pack.id ne sont pas commites (artefacts derives
+      # de pack/), donc sans cette etape le jar de release partirait sans
       # resource pack. Meme script que ./build.sh, pour que les deux ne divergent pas.
       - name: Build the resource pack
         run: ./make-pack.sh
 
       - name: Build with Maven
         run: mvn -B clean package
+
+      # Le pack a ses propres releases, une par contenu (pack.id, ecrit par make-pack.sh) :
+      # ResourcePackService pointe sur .../releases/download/pack-<id>/pack.zip. Publie a chaque
+      # push si besoin, meme sans bump de version, et jamais marque "Latest" : c'est le plugin.
+      - name: Publish the resource pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f src/main/resources/pack.id ] || { echo "No resource pack in pack/."; exit 0; }
+          id=$(cat src/main/resources/pack.id)
+          if gh release view "pack-$id" >/dev/null 2>&1; then
+            echo "Release pack-$id already exists."
+          else
+            gh release create "pack-$id" src/main/resources/pack.zip \
+              --target "$GITHUB_SHA" \
+              --title "Resource pack $id" \
+              --notes "VMC resource pack, downloaded by players from the plugin." \
+              --latest=false
+          fi
 
       - name: Read the project version from pom.xml
         id: version
@@ -74,13 +93,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # pack.zip est attache EN PLUS du jar, et pas par confort : c'est l'URL que les
-          # clients telechargent. ResourcePackService pointe par defaut sur
-          # .../releases/download/v<version>/pack.zip, donc un asset manquant = aucun joueur
-          # ne recoit le pack sur cette version.
-          assets=("target/minecraftvideo-plugin-${{ steps.version.outputs.version }}.jar")
-          [ -f src/main/resources/pack.zip ] && assets+=("src/main/resources/pack.zip")
           gh release create "v${{ steps.version.outputs.version }}" \
-            "${assets[@]}" \
+            "target/minecraftvideo-plugin-${{ steps.version.outputs.version }}.jar" \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
