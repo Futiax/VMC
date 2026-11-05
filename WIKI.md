@@ -107,7 +107,7 @@ VMC supports rendering text-based subtitles embedded inside your video files. Su
 
 ## Audio Modes & Spatialization
 
-Minecraft does not support raw streaming audio channels by default. VMC achieves synced sound by streaming decoded mono PCM audio through **Simple Voice Chat**'s addon API. 
+Minecraft does not support raw streaming audio channels by default. VMC achieves synced sound by streaming decoded PCM audio (1, 2 or 6 channels, depending on the audio mode) through **Simple Voice Chat**'s addon API. 
 
 Depending on your configuration, VMC can spatialize the audio in three ways:
 
@@ -133,7 +133,7 @@ graph TD
     B -- spawns processes --> C[mcmm decoder subprocess]
     B -- spawns processes --> D[ffmpeg audio decoder]
     C -- raw map color IDs stdout --> B
-    D -- mono/stereo PCM stdout --> E[Simple Voice Chat API]
+    D -- PCM stdout: 1, 2 or 6 channels --> E[Simple Voice Chat API]
     B -- virtual map packets async --> F[Players in range]
     E -- locational audio voice streams --> F
 ```
@@ -143,6 +143,101 @@ graph TD
 - **Asynchronous Broadcasting**: Packets are built and transmitted on a separate daemon thread to ensure the server's main tick loop is completely unaffected.
 - **Dynamic Catch-up**: Late-joining players or players entering the tracking range are dynamically added to the packet broadcast list, instantly receiving the current screen state.
 
+### Detailed Video Pipeline
+
+The path of one video, from the command to the player's screen and speakers, in three diagrams that follow each other. Sizes written `a / b` are for the `wan` and `lan` data walls.
+
+**From the command to the decoders.** Each segment runs one video, one audio and one optional subtitle process; a seek ends the segment and starts a new one.
+
+```mermaid
+flowchart TD
+    CMD["/video play, /photo, /stream"] --> KIND{"Source type?"}
+    KIND -- "local path" --> FILE["Local file"]
+    KIND -- "direct media URL" --> HTTP["MediaCache: checks the host is public,<br/>downloads it once"] --> FILE
+    KIND -- "page URL (YouTube...)" --> YT["yt-dlp downloads it<br/>into the cache"] --> FILE
+    KIND -- "live (/stream)" --> LIVE["LiveStream: ffmpeg records<br/>finished slices"] --> FILE
+    FILE -- "/photo" --> STILL["StillClip:<br/>one-second clip"] --> SEG
+    FILE --> SEG["PlaybackSession starts one segment at the current offset"]
+    SEEK["/video seek"] -. "new segment" .-> SEG
+
+    SEG --> VID["Video: mcmm<br/>(next diagram)"]
+
+    SEG --> AFF["ffmpeg: 48 kHz PCM, 1, 2 or 6 channels,<br/>starts av-sync-delay-ms ahead of the picture"]
+    AFF --> ASTR["AudioStream: 20 ms frames,<br/>960 samples per channel"]
+    ASTR --> APLAY["AudioPlayback: one queue, channel 0 is<br/>the master, the others mirror it"]
+    APLAY --> SVC["Simple Voice Chat: Opus AUDIO encoder,<br/>one locational channel per speaker"]
+    SVC --> SPEAK["Player's speakers"]
+
+    SEG -- "if a track is selected" --> SFF["SubtitleStream: ffmpeg outputs<br/>SRT with absolute timestamps"]
+    SFF --> CUE["Cue lookup"]
+    CUE --> OVER["SubtitleOverlay: fake text display<br/>in front of the screen"]
+
+    VID -. "video and audio start<br/>at the same instant" .-> APLAY
+    VID -. "position of the<br/>frame just sent" .-> CUE
+```
+
+**Video encoding and sending.** mcmm turns each frame into tiles of map colour ids, then the plugin sends only what changed. In `data` mode the tiles hold a compressed picture instead of the picture itself.
+
+```mermaid
+flowchart TD
+    subgraph ENC["mcmm: native process"]
+        FF["Internal ffmpeg: seek, fps filter, scale and pad<br/>RGB frames + timestamps"] --> MODE{"Render mode?"}
+        MODE -- "normal" --> LUT["Nearest palette colour<br/>(precomputed LUT)"]
+        MODE -- "dither" --> DITH["Palette colour +<br/>Floyd-Steinberg"]
+        MODE -- "strict" --> STRICT["Whole-number scale in C,<br/>then palette colour"]
+        MODE -- "data" --> DCT["YCbCr 4:2:0, 16x16 macroblocks, 8x8 DCT<br/>picture: 848x464 / 1232x720"]
+        DCT --> Q["Finest global q that fits the wall<br/>q = 0 first, then bisection"]
+        Q --> VLC["Quantize, zigzag, RLE, JPEG Huffman<br/>macroblocks capped at 2047 bits"]
+        VLC --> IDX["q + row starts + macroblock lengths + blocks,<br/>zeros fill the remaining capacity"]
+        IDX --> SYM["31-bit words to 4 base-244 symbols,<br/>one map colour id per module"]
+        SYM --> WALL["Wall: data + finder and alignment markers<br/>4x2 / 5x3 maps"]
+        LUT --> OUT["stdout: timestamp + 16384-byte tiles"]
+        DITH --> OUT
+        STRICT --> OUT
+        WALL --> OUT
+    end
+
+    subgraph SEND["Plugin: playback thread"]
+        OUT --> PACE["PlaybackSession paces the frames: frame 0 held<br/>audio-start-delay-ms, waits for audio, then one frame per 1/fps"]
+        PACE --> DIFF["VirtualScreen.sendFrame:<br/>compares each tile with the previous frame"]
+        VIEW["Viewers: same world, within viewer-range-blocks,<br/>checked every second, late joiners get the whole frame"] --> DIFF
+        DIFF --> CAN{"Viewer's socket<br/>writable?"}
+        CAN -- "no" --> DEBT["Remember the changed<br/>tiles (missed)"]
+        DEBT -. "next frame" .-> CAN
+        CAN -- "yes" --> BUNDLE["One packet bundle:<br/>changed + missed tiles"]
+        BUNDLE --> PE["PacketEvents: map packets on fake map ids,<br/>zlib-compressed by the server"]
+        VIEW -- "data mode" --> FX["PostEffects: /posteffect add<br/>vmc_data / vmc_data_lan"]
+    end
+
+    PE --> NEXT["Minecraft client (next diagram)"]
+    FX --> NEXT
+```
+
+**Display on the client.** The map colours reach the framebuffer exactly. Without a post effect, they are the picture. With `vmc_data`, the GPU finds the wall on screen, reads it and decodes the picture again, on every rendered frame.
+
+```mermaid
+flowchart TD
+    TEX["128x128 map textures on fake glow item frames<br/>VMC pack text.fsh without fog keeps the colours exact"] --> FB["Game framebuffer"]
+    FB --> POST{"Post effect?"}
+    POST -- "none: normal, dither, strict" --> SCREEN["Player's screen"]
+    POST -- "vmc_data / vmc_data_lan" --> SEED
+
+    subgraph DEC["Data decoder (GPU passes)"]
+        SEED["seed: 1:1:3:1:1 finder patterns"] --> TILE["tile: groups candidates on a 32x32 grid of the screen"]
+        TILE --> FIT["fit: the 3 corners of the wall"]
+        FIT --> PERSP["persp: perspective from the corners"]
+        PERSP --> ALIGN["align, pick: alignment markers refine the homography"]
+        ALIGN --> CELLS["extract: reads each module, exact colour by binary search<br/>cells: 430x238 / 622x366"]
+        CELLS --> WORDS["words: symbols back to 31-bit words"]
+        WORDS --> MB["mbstart: start of each macroblock, from the index"]
+        MB --> BLOCKS["blocks: start of the AC coefficients + DC"]
+        BLOCKS --> COEFS["coefs: Huffman + RLE decoding"]
+        COEFS --> IDCT["rows, idct: fixed-point inverse DCT, YCbCr to RGB<br/>img: 848x464 / 1232x720"]
+        IDCT --> DRAW["draw: picture fills the screen (bilinear)"]
+    end
+    DRAW --> SCREEN
+```
+
 ---
 
 ## Building & Compiling From Source
@@ -150,15 +245,15 @@ graph TD
 If you want to compile VMC yourself or build for a platform other than Linux x64:
 
 ### 1. Compile the native converter (`mcmm`)
-The native converter source code is located in `c version/`. Run the helper script to compile the binary and stage the map color palette:
+The native converter source code is in `c version/` of the separate [MinecraftVideo](https://github.com/Futiax/MinecraftVideo) repository. Clone it next to this repository, or set `MCMM_SRC` to that directory, then run the helper script:
 ```sh
 ./prepare-natives.sh
 ```
-This script compiles a portable, statically-linked `mcmm` executable and copies it (along with `preset_color_list.json`) into `src/main/resources/`.
+This script compiles a portable, statically-linked `mcmm` executable with CMake and copies it to `src/main/resources/natives/mcmm-linux-x64`. The repository already contains a Linux x64 binary, so this step is only needed after changing `mcmm` or for another platform.
 
 ### 2. Package the Plugin Jar
-Once the native binaries are staged in the resources directory, package the plugin using Maven:
+Build the resource pack and the plugin without changing the version number:
 ```sh
-mvn package
+./build.sh keep
 ```
-The compiled jar will be generated at `target/minecraftvideo-plugin-0.1.0.jar`.
+The compiled jar will be generated at `target/minecraftvideo-plugin-<version>.jar`. Without `keep`, `build.sh` increases the patch version first.
