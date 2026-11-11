@@ -23,6 +23,10 @@ public final class JoinListener implements Listener {
         // qu'on pousse un /posteffect qui s'y refere.
         plugin.getResourcePack().send(event.getPlayer());
         plugin.getPostEffects().reset(event.getPlayer());
+        if (plugin.isDaemonMode() && plugin.getDaemon() != null) {
+            plugin.getDaemon().onPlayerJoin(event.getPlayer());
+            return;
+        }
         PlaybackSession session = plugin.getActiveSession();
         if (session != null) {
             session.addViewer(event.getPlayer());
@@ -31,6 +35,9 @@ public final class JoinListener implements Listener {
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
+        if (plugin.getDaemon() != null) {
+            plugin.getDaemon().onPlayerQuit(event.getPlayer());
+        }
         plugin.getPostEffects().clear(event.getPlayer());
     }
 }

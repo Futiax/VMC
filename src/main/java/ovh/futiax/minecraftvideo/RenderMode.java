@@ -79,17 +79,25 @@ public enum RenderMode {
     //             qui se lit encore en 1080p : il doit tenir EN ENTIER a l'ecran avec >= ~2 px par
     //             symbole, soit de 2,1 a 3,1 blocs en FOV 70 (mesure)
     public enum DataWall {
-        WAN(4, 2, "minecraft:vmc_data"),
-        LAN(5, 3, "minecraft:vmc_data_lan");
+        WAN(4, 2, "minecraft:vmc_data", 2.3),
+        LAN(5, 3, "minecraft:vmc_data_lan", 2.7);
 
         private final int width;
         private final int height;
         private final String effect;
+        private final double distance;
 
-        DataWall(int width, int height, String effect) {
+        DataWall(int width, int height, String effect, double distance) {
             this.width = width;
             this.height = height;
             this.effect = effect;
+            this.distance = distance;
+        }
+
+        // Ou poser le mur devant le joueur, en blocs : dans la plage lue en jeu en 1080p (WAN
+        // 1,4 a 3,2, LAN 2,1 a 3,3), en comptant le demi-bloc d'ecart de la grille de blocs.
+        public double distance() {
+            return distance;
         }
 
         public int width() {

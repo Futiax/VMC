@@ -87,8 +87,11 @@ ZZ = zigzag()
 ZZI = [0] * 64                    # rang zigzag du coefficient (v, u) : ZZI[v * 8 + u]
 for _i, (_u, _v) in enumerate(ZZ):
     ZZI[_v * 8 + _u] = _i
-QYZ = np.array([QY[v * 8 + u] for u, v in ZZ])      # pas de base, en ordre zigzag
-QCZ = np.array([QC[v * 8 + u] for u, v in ZZ])
+# aan[k] = racine(2) cos(k pi / 16), aan[0] = 1 : le gain de la DCT AAN (dct8). Coefficient AAN x
+# QYZ[i] = coefficient / Q, en ordre zigzag, en flottants 32 bits comme mcmm.
+AAN = [1.0, 1.387039845, 1.306562965, 1.175875602, 1.0, 0.785694958, 0.541196100, 0.275899379]
+QYZ = np.array([1.0 / (QY[v * 8 + u] * 8.0 * AAN[u] * AAN[v]) for u, v in ZZ], np.float32)
+QCZ = np.array([1.0 / (QC[v * 8 + u] * 8.0 * AAN[u] * AAN[v]) for u, v in ZZ], np.float32)
 
 
 def scale(q):
@@ -173,34 +176,51 @@ def ycc2rgb(y, cb, cr):
                      y + 1.772 * (cb - 128.0)], -1)
 
 
+def aan8(b):
+    """DCT AAN (jfdctflt.c de libjpeg) sur l'avant-dernier axe de b, float32."""
+    k1, k2, k3, k4 = (np.float32(c) for c in (0.707106781, 0.382683433, 0.541196100, 1.306562965))
+    d = [b[..., i, :] for i in range(8)]
+    t0, t7, t1, t6 = d[0] + d[7], d[0] - d[7], d[1] + d[6], d[1] - d[6]
+    t2, t5, t3, t4 = d[2] + d[5], d[2] - d[5], d[3] + d[4], d[3] - d[4]
+    e0, e3, e1, e2 = t0 + t3, t0 - t3, t1 + t2, t1 - t2
+    z1 = (e2 + e3) * k1
+    o0, o1, o2 = t4 + t5, t5 + t6, t6 + t7
+    z5 = (o0 - o2) * k2
+    z2, z4, z3 = k3 * o0 + z5, k4 * o2 + z5, o1 * k1
+    z11, z13 = t7 + z3, t7 - z3
+    return np.stack([e0 + e1, z11 + z4, e3 + z1, z13 - z2, e0 - e1, z13 + z2, e3 - z1, z11 - z4], -2)
+
+
 def dct8(b):
-    """DCT 8x8 orthonormale de b [..., 8 (y), 8 (x)] -> [..., 8 (v), 8 (u)], sommes dans l'ordre de
-    mcmm (y puis x croissants, sans BLAS ni FMA) : le C retombe sur les memes doubles, donc sur les
-    memes entiers quantifies -- en longueur variable, UN coefficient de travers decale le reste."""
-    t = np.zeros(b.shape)
-    for y in range(8):
-        t = t + DM[:, y, None] * b[..., y, None, :]
-    c = np.zeros(b.shape)
-    for x in range(8):
-        c = c + t[..., :, x, None] * DM[None, :, x]
-    return c
+    """DCT 8x8 de b float32 [..., 8 (y), 8 (x)] -> coefficients AAN [..., 8 (u), 8 (v)] : les memes
+    operations en float32 que mcmm, donc les memes entiers quantifies -- en longueur variable, UN
+    coefficient de travers decale le reste."""
+    return aan8(np.swapaxes(aan8(b), -1, -2))
 
 
-def to_blocks(img):
-    """img RGB [HC_, WC_, 3] -> (coefY [n, 4, 8, 8], coefC [n, 2, 8, 8]), macroblocs ligne par
-    ligne ; Y : blocs (haut-gauche, haut-droit, bas-gauche, bas-droit), coef[v, u]."""
+def to_planes(img):
+    """Canva RGB uint8 [HC_, WC_, 3] -> plans uint8 Y, Cb, Cr (4:2:0, moyenne 2x2, chroma centree),
+    ce que ffmpeg donne a mcmm pour une video (MCMM_VF)."""
     y, cb, cr = rgb2ycc(img.astype(np.float64))
-    yb = (y - 128.0).reshape(SY, 2, 8, SX, 2, 8).transpose(0, 3, 1, 4, 2, 5).reshape(SY * SX, 4, 8, 8)
-    def sub(c):                                        # 4:2:0 : moyenne 2x2
-        return c.reshape(HC_ // 2, 2, WC_ // 2, 2).mean((1, 3)) - 128.0
-    cbb = sub(cb).reshape(SY, 8, SX, 8).transpose(0, 2, 1, 3).reshape(SY * SX, 8, 8)
-    crb = sub(cr).reshape(SY, 8, SX, 8).transpose(0, 2, 1, 3).reshape(SY * SX, 8, 8)
+    def sub(c):
+        return c.reshape(HC_ // 2, 2, WC_ // 2, 2).mean((1, 3))
+    return tuple(np.clip(fl(c), 0, 255).astype(np.uint8) for c in (y, sub(cb), sub(cr)))
+
+
+def to_blocks(y, cb, cr):
+    """Plans -> (coefY [n, 4, 8, 8], coefC [n, 2, 8, 8]), macroblocs ligne par ligne ; Y : blocs
+    (haut-gauche, haut-droit, bas-gauche, bas-droit), coefficients AAN [u, v]."""
+    def centred(c):
+        return c.astype(np.float32) - np.float32(128.0)
+    yb = centred(y).reshape(SY, 2, 8, SX, 2, 8).transpose(0, 3, 1, 4, 2, 5).reshape(SY * SX, 4, 8, 8)
+    cbb = centred(cb).reshape(SY, 8, SX, 8).transpose(0, 2, 1, 3).reshape(SY * SX, 8, 8)
+    crb = centred(cr).reshape(SY, 8, SX, 8).transpose(0, 2, 1, 3).reshape(SY * SX, 8, 8)
     return dct8(yb), dct8(np.stack([cbb, crb], 1))
 
 
 def zz_flat(c):
-    """[..., 8, 8] (v, u) -> [..., 64] dans l'ordre zigzag."""
-    return np.stack([c[..., v, u] for u, v in ZZ], -1)
+    """[..., 8, 8] (u, v) -> [..., 64] dans l'ordre zigzag."""
+    return np.stack([c[..., u, v] for u, v in ZZ], -1)
 
 
 def unzz(z):
@@ -215,8 +235,12 @@ def fl(x):
 # --- codeur ---------------------------------------------------------------------------------
 
 def quant(zy, zc, s):
-    """Coefficients zigzag -> entiers, au pas Q * s (le DC aussi, comme JPEG), bornes a AMP_MAX."""
-    return (np.clip(fl(zy / (QYZ * s)), -AMP_MAX, AMP_MAX), np.clip(fl(zc / (QCZ * s)), -AMP_MAX, AMP_MAX))
+    """Coefficients AAN zigzag -> entiers, au pas Q * s (le DC aussi, comme JPEG), bornes a AMP_MAX.
+    En float32, dans l'ordre de mcmm : floor(z (QZ / s) + 0,5)."""
+    inv = np.float32(1.0 / s)
+    def q(z, qz):
+        return np.clip(np.floor(z * (qz * inv) + np.float32(0.5)).astype(np.int64), -AMP_MAX, AMP_MAX)
+    return q(zy, QYZ), q(zc, QCZ)
 
 
 def dc_diff(qy):
@@ -299,23 +323,59 @@ def symbols_to_words(sym):
 
 
 def encode(img, info=None):
-    """canva RGB uint8 [HC_, WC_, 3] -> symboles de toute la zone de donnees [DH, DW]. info (dict)
-    recoit q, les coefficients quantifies et les longueurs, pour les tests."""
-    cy, cc = to_blocks(img)
-    zy, zc = zz_flat(cy), zz_flat(cc)
-    n = SX * SY
-    room = CAPACITY - QB_BITS - SY * ROW_BITS - n * LEN_BITS
-    def fits(q):
-        return np.minimum(mb_bits(*quant(zy, zc, scale(q))), LEN_MAX).sum() <= room
-    lo, hi = 0, 255                  # le q le plus fin qui tient ; a 255 tout tient (DC seuls)
-    if fits(0):                      # q = 0 d'abord, comme mcmm : la plupart des videos y tiennent
-        hi = 0
+    """canva RGB uint8 [HC_, WC_, 3] -> symboles de toute la zone de donnees [DH, DW]."""
+    return encode_planes(*to_planes(img), info)
+
+
+def search_q(prev, fits):
+    """Le q le plus fin qui tient, sachant que q = 0 ne tient pas (a 255 tout tient : DC seuls).
+    Galop a partir de prev, le q de la frame precedente, puis dichotomie : le meme parcours que
+    data_search_q() de mcmm. Si le nombre de bits n'est pas monotone en q, deux recherches differentes
+    peuvent s'arreter sur des q differents."""
+    lo, hi = 1, 255
+    q = min(max(prev, 1), 254)
+    if fits(q):
+        hi, step = q, 1
+        while lo < hi:
+            q = hi - step
+            if q < lo:
+                break
+            if not fits(q):
+                lo = q + 1
+                break
+            hi = q
+            step *= 2
+    else:
+        lo, step = q + 1, 1
+        while lo < hi:
+            q = lo + step - 1
+            if q >= hi:
+                break
+            if fits(q):
+                hi = q
+                break
+            lo = q + 1
+            step *= 2
     while lo < hi:
         mid = (lo + hi) // 2
         if fits(mid):
             hi = mid
         else:
             lo = mid + 1
+    return lo
+
+
+def encode_planes(y, cb, cr, info=None, prev_q=0):
+    """Plans uint8 du canva -> symboles. info (dict) recoit q, les coefficients quantifies et les
+    longueurs, pour les tests. prev_q = le q de la frame precedente, 0 pour une image seule."""
+    cy, cc = to_blocks(y, cb, cr)
+    zy, zc = zz_flat(cy), zz_flat(cc)
+    n = SX * SY
+    room = CAPACITY - QB_BITS - SY * ROW_BITS - n * LEN_BITS
+    def fits(q):
+        return np.minimum(mb_bits(*quant(zy, zc, scale(q))), LEN_MAX).sum() <= room
+    # q = 0 d'abord, comme mcmm : la plupart des videos y tiennent
+    lo = 0 if fits(0) else search_q(prev_q, fits)
     qy, qc = quant(zy, zc, scale(lo))
     for k in np.nonzero(mb_bits(qy, qc) > LEN_MAX)[0]:
         truncate(qy, qc, k)
@@ -602,10 +662,36 @@ def frame_tiles(cells):
     return np.frombuffer(wall_tiles(wall_ids(cells)), np.uint8).reshape(-1, 128 * 128)
 
 
+def mcmm_vf(fps):
+    """Le filtre de mcmm --data (mcmm.c, build_decode_cmd), sans son showinfo final."""
+    return (f"fps={fps},scale={WC_}:{HC_}:force_original_aspect_ratio=decrease"
+            ":flags=bicubic+accurate_rnd:out_color_matrix=bt601:out_range=full"
+            f":out_h_chr_pos=128:out_v_chr_pos=128,format=yuvj420p,pad={WC_}:{HC_}:(ow-iw)/2:(oh-ih)/2:black")
+
+
+def mcmm_planes(video, fps, seek=(), n=None):
+    """Les frames que ffmpeg donne a mcmm --data : liste de plans uint8 (Y, Cb, Cr)."""
+    import subprocess
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-copyts", *seek, "-i", video,
+                          "-vf", mcmm_vf(fps), *(["-frames:v", str(n)] if n else []),
+                          "-f", "rawvideo", "-pix_fmt", "yuvj420p", "-"],
+                         capture_output=True, check=True).stdout
+    ny, nc = WC_ * HC_, WC_ // 2 * (HC_ // 2)
+    a = np.frombuffer(raw, np.uint8).reshape(-1, ny + 2 * nc)
+    return [(f[:ny].reshape(HC_, WC_), f[ny:ny + nc].reshape(HC_ // 2, WC_ // 2),
+             f[ny + nc:].reshape(HC_ // 2, WC_ // 2)) for f in a]
+
+
+def planes_rgb(y, cb, cr):
+    """Plans -> RGB float (chroma repetee) : la reference du PSNR, le codec seul."""
+    up = lambda c: c.astype(np.float64).repeat(2, 0).repeat(2, 1)
+    return ycc2rgb(y.astype(np.float64), up(cb), up(cr))
+
+
 def net_stats(exe, video, start=0.0, n=300, every=5):
     """mcmm --data sur une vraie video (mur courant, 10 fps, n frames depuis start) : tuiles
     renvoyees (le plugin saute les tuiles identiques), debit apres zlib niveau 6 (la compression des
-    paquets de Paper), PSNR du canva decode contre la source (une frame sur every). PSNR de la MSE
+    paquets de Paper), PSNR du canva decode contre les plans donnes a mcmm (une frame sur every). PSNR de la MSE
     MOYENNE, pas moyenne des PSNR : sur une frame presque noire, 0,04 -> 2 de MSE (invisible)
     "coute" 17 dB."""
     import subprocess
@@ -613,12 +699,7 @@ def net_stats(exe, video, start=0.0, n=300, every=5):
     w, h = WALL_MAPS
     size = w * h * 16384
     seek = ["-ss", f"{start:.3f}"] if start > 0 else []
-    vf = (f"fps=10,scale={WC_}:{HC_}:force_original_aspect_ratio=decrease,"
-          f"pad={WC_}:{HC_}:(ow-iw)/2:(oh-ih)/2:black")              # le filtre de mcmm --data
-    raw = subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-copyts", *seek, "-i", video, "-vf", vf,
-                          "-frames:v", str(n), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                         capture_output=True, check=True).stdout
-    src = np.frombuffer(raw, np.uint8).reshape(-1, HC_, WC_, 3)
+    src = mcmm_planes(video, 10, seek, n)
     p = subprocess.Popen([exe, "--stream", "--data", *(["--seek", f"{start:.3f}"] if start > 0 else []),
                           video, str(w), str(h), "10"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     p.stdout.read(16)
@@ -634,8 +715,8 @@ def net_stats(exe, video, start=0.0, n=300, every=5):
             nbytes += sum(len(zlib.compress(t.tobytes(), 6)) for t in tiles[ch])
         if i % every == 0:
             cells = cells_of_tiles(buf)
-            same &= bool((cells == encode(src[i])).all())   # meme frame, et le C = ce script
-            mse.append(((decode(cells).astype(np.float64) - src[i]) ** 2).mean())
+            same &= bool((cells == encode_planes(*src[i])).all())   # meme frame, et le C = ce script
+            mse.append(((decode(cells).astype(np.float64) - planes_rgb(*src[i])) ** 2).mean())
         prev = tiles
     p.kill()
     p.wait()
@@ -1697,7 +1778,7 @@ def mcmm_check(exe):
     """mcmm --data (le codeur du serveur, en C) contre ce script, octet pour octet sur le mur
     courant : 3 images de test et du bruit, passees en clip png (sans perte) au canva exact.
     En longueur variable, un seul coefficient de travers decale tout le reste de sa ligne : d'ou la
-    DCT dans un ordre de sommes fixe (dct8). Pour le mur wan, les references data_ref/ (le format
+    DCT dans les memes operations float32 (dct8). Pour le mur wan, les references data_ref/ (le format
     du 13/10) doivent aussi tenir."""
     import subprocess
     import tempfile
@@ -1715,10 +1796,34 @@ def mcmm_check(exe):
             out = subprocess.run([exe, "--stream", "--data", clip, str(w), str(h), "10"],
                                  capture_output=True, check=True).stdout
             got = np.frombuffer(out[24:24 + w * h * 16384], np.uint8)
-            want = np.frombuffer(wall_tiles(wall_ids(encode(img))), np.uint8)
+            want = np.frombuffer(wall_tiles(wall_ids(encode_planes(*mcmm_planes(clip, 10, n=1)[0]))), np.uint8)
             bad = int((got != want).sum()) if got.size == want.size else -1
             ok &= bad == 0
             print(f"  {'OK ' if bad == 0 else 'DIFF'} mur {WALL} image {n} : {bad} octets differents")
+        # Une sequence : mcmm part du q de la frame d'avant, le script doit suivre le meme parcours.
+        rng = np.random.default_rng(8)
+        amps = (255, 200, 255, 120, 60, 200, 0, 255)
+        for n, a in enumerate(amps):
+            noise = rng.integers(128 - a // 2, 128 + (a + 1) // 2 + 1, (HC_, WC_, 3))
+            Image.fromarray(noise.astype(np.uint8)).save(os.path.join(d, f"s{n}.png"))
+        clip = os.path.join(d, "s.mkv")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-framerate", "10", "-i", os.path.join(d, "s%d.png"),
+                        "-c:v", "png", clip], check=True)
+        out = subprocess.run([exe, "--stream", "--data", clip, str(w), str(h), "10"],
+                             capture_output=True, check=True).stdout
+        size = w * h * 16384
+        prev_q, qs, bad = 0, [], 0
+        for n, planes in enumerate(mcmm_planes(clip, 10, n=len(amps))):
+            info = {}
+            cells = encode_planes(*planes, info, prev_q)
+            prev_q = info["q"]
+            qs.append(prev_q)
+            at = 16 + n * (8 + size) + 8
+            got = np.frombuffer(out[at:at + size], np.uint8)
+            want = np.frombuffer(wall_tiles(wall_ids(cells)), np.uint8)
+            bad += int((got != want).sum()) if got.size == want.size else want.size
+        ok &= bad == 0
+        print(f"  {'OK ' if bad == 0 else 'DIFF'} mur {WALL} sequence q={qs} : {bad} octets differents")
     if WALL == "wan":
         for n in range(3):
             ref = os.path.join(ROOT, "data_ref", f"frame{n}")

@@ -26,6 +26,8 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
     private LiveStream liveStream;                      // non-null pendant un /stream
     private ToolInstaller tools;                        // ffmpeg/ffprobe + yt-dlp
     private ResourcePackService resourcePack;           // pack VMC pousse aux joueurs au join
+    private McmmDaemon daemon;                          // pont vers mcmm --daemon
+    private volatile boolean daemonMode;                // true = tout passe par le demon C
 
     @Override
     public void onEnable() {
@@ -104,6 +106,12 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         }, 20L, 20L);
 
         registerVoicechat();
+
+        daemon = new McmmDaemon(this);
+        daemonMode = getConfig().getBoolean("c-daemon", false);
+        if (daemonMode) {
+            daemon.start();
+        }
     }
 
     // On s'enregistre comme addon Simple Voice Chat si SVC est la.
@@ -117,6 +125,17 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         voicechatHook = new VoicechatHook();
         service.registerPlugin(voicechatHook);
         getLogger().info("Registered as a Simple Voice Chat addon for video audio.");
+    }
+
+    // /vmc debug : volontairement pas dans config.yml, un CSV oublie grossit a chaque video.
+    private volatile boolean debugTimings;
+
+    public boolean isDebugTimings() {
+        return debugTimings;
+    }
+
+    public void setDebugTimings(boolean on) {
+        debugTimings = on;
     }
 
     public VoicechatHook getVoicechatHook() {       // null si SVC absent
@@ -234,6 +253,27 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return resourcePack;
     }
 
+    public McmmDaemon getDaemon() {
+        return daemon;
+    }
+
+    public boolean isDaemonMode() {
+        return daemonMode;
+    }
+
+    public void setDaemonMode(boolean on) {
+        this.daemonMode = on;
+        if (on) {
+            PlaybackSession active = activeSession;
+            if (active != null) {
+                active.stop();
+            }
+            daemon.start();
+        } else if (daemon != null) {
+            daemon.stop();
+        }
+    }
+
     // snapshots des options config, pris au demarrage d'une lecture
     public SubtitleSettings buildSubtitleSettings() {
         return new SubtitleSettings(
@@ -263,6 +303,9 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         if (controlBarListener != null) {
             PacketEvents.getAPI().getEventManager().unregisterListener(controlBarListener);
             controlBarListener = null;
+        }
+        if (daemon != null) {
+            daemon.stop();
         }
         if (resourcePack != null) {
             resourcePack.disable();     // libere le port, sinon un /reload ne peut plus le rouvrir

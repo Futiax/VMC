@@ -115,9 +115,8 @@ public final class PlaybackSession {
     private volatile long playStartNanos;    // 0 tant que la boucle de frames du segment n'a pas demarre
     private volatile long pausedAccumNanos;  // temps total passe en pause (ce segment)
     private volatile long pauseStartNanos;   // != 0 pendant qu'on est en pause
-    private volatile long framesSent;        // frames envoyees ce segment
-    private volatile long totalDecodeNanos;  // temps cumule bloque dans nextFrame()
-    private volatile long totalSendNanos;    // temps cumule dans sendFrame()
+    private volatile long framesSent;        // frames lues ce segment, y compris celles sautees en rattrapage
+    private final DebugTimings timings = new DebugTimings();    // /video status et /vmc debug
     private volatile int streamFps;
     private volatile int screenW;
     private volatile int screenH;
@@ -428,8 +427,8 @@ public final class PlaybackSession {
         return seekTo(getPositionMillis() + deltaMillis);
     }
 
-    // Park le thread de lecture pendant la pause, rend une deadline toute neuve a la reprise.
-    private long awaitResume(long intervalNanos) {
+    // Park le thread de lecture pendant la pause.
+    private void awaitResume() {
         synchronized (pauseLock) {
             pauseStartNanos = System.nanoTime();
             while (paused.get() && !stopped.get()) {
@@ -443,7 +442,6 @@ public final class PlaybackSession {
             pausedAccumNanos += System.nanoTime() - pauseStartNanos;
             pauseStartNanos = 0;
         }
-        return System.nanoTime() + intervalNanos;
     }
 
     // Garde la premiere image (deja envoyee) a l'ecran pendant audio-start-delay-ms de temps
@@ -474,7 +472,7 @@ public final class PlaybackSession {
         long remaining = Math.max(0, audioSettings.audioStartDelayMillis()) * 1_000_000L;
         while (remaining > 0 && !stopped.get() && pendingSeekMillis.get() < 0) {
             if (paused.get()) {
-                awaitResume(0); // park jusqu'a la reprise, l'horloge du gel s'arrete
+                awaitResume(); // park jusqu'a la reprise, l'horloge du gel s'arrete
                 continue;
             }
             long t = System.nanoTime();
@@ -501,7 +499,7 @@ public final class PlaybackSession {
         while (remaining > 0 && !ap.isPrimed() && !ap.hasReachedEof()
                 && !stopped.get() && pendingSeekMillis.get() < 0) {
             if (paused.get()) {
-                awaitResume(0); // park jusqu'a la reprise, l'horloge d'amorcage s'arrete
+                awaitResume(); // park jusqu'a la reprise, l'horloge d'amorcage s'arrete
                 continue;
             }
             long t = System.nanoTime();
@@ -524,23 +522,6 @@ public final class PlaybackSession {
         long pausedTotal = pausedAccumNanos + (ps != 0 ? now - ps : 0);
         double elapsedS = Math.max(0.0, (now - playStartNanos - pausedTotal)) / 1e9;
         double effFps = elapsedS > 0 ? frames / elapsedS : 0;
-        double avgDecodeMs = frames > 0 ? totalDecodeNanos / 1e6 / frames : 0;
-        double avgSendMs = frames > 0 ? totalSendNanos / 1e6 / frames : 0;
-        double workMs = avgDecodeMs + avgSendMs;
-        double budgetMs = 1000.0 / fps;
-
-        String margin;
-        if (workMs <= 0) {
-            margin = "n/a (no frames yet)";
-        } else {
-            double headroom = budgetMs / workMs;
-            if (headroom >= 1.0) {
-                int idlePct = (int) Math.round((1.0 - workMs / budgetMs) * 100);
-                margin = String.format("%.1fx headroom (%d%% idle) — plenty of room", headroom, idlePct);
-            } else {
-                margin = String.format("BEHIND real time (%.2fx) — generation can't keep up, lower fps/size", headroom);
-            }
-        }
 
         VirtualScreen scr = screen;
         int dropped = scr != null ? scr.getDroppedFrames() : 0;
@@ -549,7 +530,7 @@ public final class PlaybackSession {
                 : dropped + " frame(s) dropped on saturated connections"
                         + " — lower fps/size if this keeps climbing";
 
-        return new String[] {
+        List<String> lines = new java.util.ArrayList<>(List.of(
             "Source: " + shortSource() + (paused.get() ? "  [PAUSED]" : ""),
             // le rendu est affiche parce qu'il se paie sur le decodage mcmm : oublier le dither
             // allume, c'est chercher une regression de perf dans le mauvais processus
@@ -557,12 +538,10 @@ public final class PlaybackSession {
                     + audioSettings.mode().configName()
                     + (renderMode != RenderMode.NORMAL ? ", render " + renderMode.configName() : ""),
             "Position: " + formatTimestamp(getPositionMillis())
-                    + String.format(" — %d frames this segment, %.1f effective fps", frames, effFps),
-            String.format("Generation: %.1f ms/frame (decode %.1f + send %.1f) vs %.1f ms budget",
-                    workMs, avgDecodeMs, avgSendMs, budgetMs),
-            "Margin: " + margin,
-            "Network: " + network,
-        };
+                    + String.format(" — %d frames this segment, %.1f effective fps", frames, effFps)));
+        lines.addAll(List.of(timings.describe(1_000_000_000L / fps)));
+        lines.add("Network: " + network);
+        return lines.toArray(new String[0]);
     }
 
     // formate des millis en m:ss ou h:mm:ss
@@ -679,6 +658,7 @@ public final class PlaybackSession {
             t.printStackTrace();
         } finally {
             stop(); // arret auto en EOF ou sur erreur, idempotent
+            timings.close();
             deleteStillClip(); // apres stop() : un stop() concurrent a pu passer avant la publication
             // Release de la reference de cache de cette occurrence APRES stop(), pour que les
             // pipelines aient fini de lire le fichier avant qu'il puisse etre supprime.
@@ -722,8 +702,6 @@ public final class PlaybackSession {
         pausedAccumNanos = 0;
         pauseStartNanos = 0;
         framesSent = 0;
-        totalDecodeNanos = 0;
-        totalSendNanos = 0;
 
         // On lance le sous-process puis on le publie AVANT la lecture bloquante du header,
         // comme ca un stop()/seekTo() concurrent peut tuer mcmm et nous debloquer.
@@ -755,7 +733,10 @@ public final class PlaybackSession {
                 scr = new VirtualScreen(anchor,
                         newStream.getMapWidth(), newStream.getMapHeight(),
                         controlBarEnabled, subtitleSettings, viewerRange,
-                        plugin.getPostEffects(), plugin.getPostEffects().effectFor(renderMode, dataWall));
+                        plugin.getPostEffects(), plugin.getPostEffects().effectFor(renderMode, dataWall),
+                        renderMode == RenderMode.DATA ? dataWall.distance()
+                                : VirtualScreen.viewDistance(newStream.getMapWidth(),
+                                        newStream.getMapHeight()));
                 synchronized (lock) {
                     if (stopped.get()) {
                         return -1; // stop() a deja ferme le stream
@@ -817,13 +798,9 @@ public final class PlaybackSession {
             // d'ecran cote client passe sur une image fixe et sans audio en vol. Les segments
             // de seek reutilisent l'ecran (pas de pic de spawn) : pas de gel.
             if (first) {
-                long t0 = System.nanoTime();
                 byte[][] frame0 = newStream.nextFrame();
                 if (frame0 != null) {
-                    long t1 = System.nanoTime();
                     scr.sendFrame(frame0);
-                    totalDecodeNanos += (t1 - t0);
-                    totalSendNanos += (System.nanoTime() - t1);
                     framesSent++;
                     freezeFirstFrame();
                 }
@@ -841,12 +818,16 @@ public final class PlaybackSession {
             pausedAccumNanos = 0; // les pauses pendant le gel/amorcage sont deja comptees
             this.playStartNanos = System.nanoTime();
             long deadline = playStartNanos + intervalNanos;
+            long nextSend = playStartNanos;
             long audioBeginNanos = playStartNanos;
             boolean audioBegun = false;
 
             while (!stopped.get() && pendingSeekMillis.get() < 0) {
                 if (paused.get()) {
-                    deadline = awaitResume(intervalNanos); // re-ancre la deadline
+                    // l'audio s'arrete aussi : la pause decale la deadline sans effacer le retard
+                    long pausedAt = System.nanoTime();
+                    awaitResume();
+                    deadline += System.nanoTime() - pausedAt;
                     if (stopped.get()) {
                         break;
                     }
@@ -880,11 +861,16 @@ public final class PlaybackSession {
                     break; // EOF (vraie fin, ou process tue par un seek)
                 }
                 long t1 = System.nanoTime();
-                scr.sendFrame(frame); // le VirtualScreen la garde pour les late joiners
+                // Une frame entiere de retard : on lit sans dormir pour rejoindre le son, qui ne
+                // nous attend pas. Pendant ce rattrapage, l'image continue au debit normal et le
+                // surplus de frames n'est pas envoye. nextSend absorbe la gigue d'une source
+                // cadencee, sans quoi elle sauterait des frames a retard constant.
+                boolean send = t1 - deadline < intervalNanos || t1 >= nextSend;
+                if (send) {
+                    scr.sendFrame(frame); // le VirtualScreen la garde pour les late joiners
+                    nextSend = Math.max(nextSend, t1 - intervalNanos) + intervalNanos;
+                }
                 long t2 = System.nanoTime();
-
-                totalDecodeNanos += (t1 - t0);
-                totalSendNanos += (t2 - t1);
                 framesSent++;
 
                 // On reconcilie l'overlay sous-titres depuis la position video a CHAQUE frame :
@@ -905,15 +891,13 @@ public final class PlaybackSession {
                         : null);
 
                 long sleepNanos = deadline - System.nanoTime();
+                logTimings(newStream, intervalNanos, t1 - t0, scr, send, t2 - t1, sleepNanos);
                 if (sleepNanos > 0) {
                     LockSupport.parkNanos(sleepNanos);
                 }
-                // La deadline suivante s'ancre sur la precedente : pas de derive.
+                // La deadline suivante s'ancre sur la precedente : pas de derive, et un retard
+                // reste du. Si mcmm ne repasse jamais sous le budget, il n'est pas rattrape.
                 deadline += intervalNanos;
-                long now = System.nanoTime();
-                if (deadline < now - intervalNanos) {
-                    deadline = now; // on a decroche pour de bon (decodage lent), on resynchronise
-                }
             }
         } catch (IOException e) {
             // Un seek ferme le stream en pleine lecture : cette IOException est ATTENDUE et
@@ -953,6 +937,26 @@ public final class PlaybackSession {
 
         long pending = pendingSeekMillis.getAndSet(-1);
         return (!stopped.get() && pending >= 0) ? pending : -1;
+    }
+
+    // /vmc debug : le fichier s'ouvre a la premiere frame mesuree et se ferme des que c'est coupe.
+    private void logTimings(McmmStream source, long budgetNanos, long readNanos, VirtualScreen scr,
+                            boolean sent, long sendNanos, long sleepNanos) {
+        if (plugin.isDebugTimings() && !timings.isWriting()) {
+            java.nio.file.Path file = DebugTimings.newFile(plugin.getDataFolder().toPath());
+            String meta = DebugTimings.formatMeta(playSource, this.source, false,
+                    renderMode.configName(), dataWall.configName(), screenW, screenH, streamFps);
+            try {
+                timings.startWriting(file, meta);
+                plugin.getLogger().info("Debug timings: writing " + file);
+            } catch (IOException e) {
+                plugin.getLogger().warning("Debug timings: cannot write " + file + " (" + e + "), turning them off.");
+                plugin.setDebugTimings(false);
+            }
+        } else if (!plugin.isDebugTimings()) {
+            timings.close();
+        }
+        timings.row(framesSent, segmentOffsetMillis, source, budgetNanos, readNanos, scr, sent, sendNanos, sleepNanos);
     }
 
     // Lance le ffmpeg audio de ce segment si l'audio est active et que Simple Voice Chat est

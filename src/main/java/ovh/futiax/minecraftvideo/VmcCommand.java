@@ -21,9 +21,10 @@ import java.util.Locale;
 // /vmc render <normal|dither|strict|data>    rendu des couleurs ("dither" = ancien nom)
 // /vmc data <wan|lan>                        mur du rendu data (4x2 ou 5x3 maps)
 // /vmc sub <size|height|depth> <valeur>      geometrie de l'overlay sous-titres
+// /vmc debug <on|off>                        temps de chaque etape dans un CSV, jusqu'au redemarrage
 public final class VmcCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> KEYWORDS = List.of("audio", "avsync", "data", "fps", "render", "size", "sub");
+    private static final List<String> KEYWORDS = List.of("audio", "avsync", "daemon", "data", "debug", "fps", "render", "settings-info", "size", "sub");
 
     private final MinecraftVideoPlugin plugin;
 
@@ -35,6 +36,8 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         String key = args.length >= 1 ? args[0].toLowerCase(Locale.ROOT) : "";
         switch (key) {
+            case "settings-info", "info" -> handleSettingsInfo(sender);
+            case "daemon" -> handleDaemon(sender, label, args);
             case "audio" -> handleAudio(sender, label, args);
             case "avsync" -> handleAvsync(sender, label, args);
             case "render", "dither" -> handleRender(sender, label, args);
@@ -42,7 +45,11 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
             case "sub", "subs", "subtitle" -> handleSub(sender, label, args);
             case "size" -> handleSize(sender, label, args);
             case "fps" -> handleFps(sender, label, args);
+            case "debug" -> handleDebug(sender, label, args);
             default -> showSettings(sender, label);
+        }
+        if (plugin.isDaemonMode() && plugin.getDaemon() != null && plugin.getDaemon().isRunning()) {
+            plugin.getDaemon().syncConfigToDaemon();
         }
         return true;
     }
@@ -72,6 +79,85 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage("      or: /" + label + " render <normal|dither|strict|data>");
         sender.sendMessage("      or: /" + label + " data <wan|lan>");
         sender.sendMessage("      or: /" + label + " sub <size|height|depth> <value>");
+        sender.sendMessage("      or: /" + label + " debug <on|off>");
+        sender.sendMessage("      or: /" + label + " daemon <on|off>");
+        sender.sendMessage("      or: /" + label + " settings-info");
+    }
+
+    // /vmc settings-info : affiche l'etat detaille de tous les reglages actifs
+    private void handleSettingsInfo(CommandSender sender) {
+        var cfg = plugin.getConfig();
+        RenderMode render = RenderMode.fromConfig(cfg);
+        RenderMode.DataWall wall = RenderMode.DataWall.fromConfig(cfg);
+        int defW = cfg.getInt("default-width", 4);
+        int defH = cfg.getInt("default-height", 3);
+        int effW = render == RenderMode.DATA ? wall.width() : defW;
+        int effH = render == RenderMode.DATA ? wall.height() : defH;
+        int fps = cfg.getInt("default-fps", 10);
+        boolean daemonOn = plugin.isDaemonMode();
+        boolean daemonAlive = plugin.getDaemon() != null && plugin.getDaemon().isRunning();
+        boolean debugOn = plugin.isDebugTimings();
+        String audioMode = AudioMode.fromConfig(cfg.getString("audio-mode", "mono")).configName();
+        boolean audioEnabled = cfg.getBoolean("audio-enabled", true);
+        int avsync = cfg.getInt("av-sync-delay-ms", 200);
+        int startDelay = cfg.getInt("audio-start-delay-ms", 1000);
+        double subSize = cfg.getDouble("subtitle-size", 1.0);
+        double subHeight = cfg.getDouble("subtitle-height", 0.45);
+        double subDepth = cfg.getDouble("subtitle-depth", 0.05);
+        int viewerRange = cfg.getInt("viewer-range-blocks", 64);
+        boolean controlBar = cfg.getBoolean("control-bar-enabled", true);
+        String postEffect = cfg.getString("post-effect", "");
+        String activeEffect = plugin.getPostEffects().effectFor(render, wall);
+
+        sender.sendMessage("§b=== [MinecraftVideo] Settings Info ===");
+        sender.sendMessage("  §7C-Daemon      : §f" + (daemonOn ? "ON" + (daemonAlive ? " (running)" : " (idle)") : "OFF"));
+        sender.sendMessage("  §7Debug CSV     : §f" + (debugOn ? "ON (plugins/MinecraftVideo/debug/)" : "OFF"));
+        sender.sendMessage("  §7Render mode   : §f" + render.configName()
+                + (render == RenderMode.DATA ? " (wall: " + wall.configName() + " " + wall.width() + "x" + wall.height() + ")" : ""));
+        sender.sendMessage("  §7Screen size   : §f" + effW + "x" + effH + " maps"
+                + (render == RenderMode.DATA ? " (forced by data wall; config default: " + defW + "x" + defH + ")" : ""));
+        sender.sendMessage("  §7Framerate     : §f" + fps + " fps (budget " + (1000.0 / fps) + " ms/frame)");
+        sender.sendMessage("  §7Post-effect   : §f" + (activeEffect.isEmpty() ? "none" : activeEffect)
+                + (postEffect != null && !postEffect.isBlank() ? " (configured: " + postEffect + ")" : ""));
+        sender.sendMessage("  §7Viewer range  : §f" + (viewerRange <= 0 ? "unlimited" : viewerRange + " blocks")
+                + " | Control bar: " + (controlBar && render != RenderMode.DATA ? "ON" : "OFF"));
+        sender.sendMessage("  §7Audio         : §f" + (audioEnabled ? audioMode : "disabled")
+                + " (avsync: " + avsync + " ms, start-delay: " + startDelay + " ms)");
+        sender.sendMessage("  §7Subtitles     : §fsize=" + subSize + ", height=" + subHeight + ", depth=" + subDepth);
+    }
+
+    // /vmc daemon [on|off] : active ou desactive le mode ou le demon C gere toute la session
+    private void handleDaemon(CommandSender sender, String label, String[] args) {
+        String value = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
+        if (!value.equals("on") && !value.equals("off")) {
+            sender.sendMessage("[MinecraftVideo] C-Daemon mode is "
+                    + (plugin.isDaemonMode() ? "ON" : "OFF")
+                    + ". Set with: /" + label + " daemon <on|off>");
+            return;
+        }
+        boolean on = value.equals("on");
+        plugin.getConfig().set("c-daemon", on);
+        plugin.saveConfig();
+        plugin.setDaemonMode(on);
+        sender.sendMessage(on
+                ? "[MinecraftVideo] C-Daemon mode enabled (mcmm --daemon manages screen, pacing, diff & seek)."
+                : "[MinecraftVideo] C-Daemon mode disabled (reverted to Java PlaybackSession).");
+    }
+
+    // /vmc debug [on|off] : pas persiste, et pas de fichier tant qu'aucune frame n'est mesuree
+    private void handleDebug(CommandSender sender, String label, String[] args) {
+        String value = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
+        if (!value.equals("on") && !value.equals("off")) {
+            sender.sendMessage("[MinecraftVideo] Debug timings are "
+                    + (plugin.isDebugTimings() ? "on" : "off") + ". Set with: /" + label + " debug <on|off>");
+            return;
+        }
+        boolean on = value.equals("on");
+        plugin.setDebugTimings(on);
+        sender.sendMessage(on
+                ? "[MinecraftVideo] Debug timings on until the next restart: one CSV per video, starting now, in "
+                        + plugin.getDataFolder().toPath().resolve("debug") + "."
+                : "[MinecraftVideo] Debug timings off.");
     }
 
     // /vmc size [<width> <height>] : affiche ou regle/persiste la taille d'ecran par defaut
@@ -318,6 +404,7 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
                 case "sub" -> startingWith(List.of("size", "height", "depth"), args[1]);
                 case "avsync" -> startingWith(List.of("0", "100", "200", "300", "500"), args[1]);
                 case "fps" -> startingWith(List.of("5", "10", "15", "20"), args[1]);
+                case "debug", "daemon" -> startingWith(List.of("on", "off"), args[1]);
                 default -> List.of();
             };
         }

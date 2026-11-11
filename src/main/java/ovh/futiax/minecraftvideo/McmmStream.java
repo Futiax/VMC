@@ -25,6 +25,10 @@ import java.util.logging.Logger;
 // dans la SOURCE, en microsecondes (absolu : inchange par --seek). C'est la seule horloge
 // partagee entre deux connexions independantes a un meme flux live. On accepte les deux
 // versions pour qu'un vieux binaire mcmm deja deploye continue de marcher.
+//
+// --stats (/video status, /vmc debug) : le u32 reserve vaut le nombre de champs, et chaque frame
+// porte ces u32 entre son PTS et ses tuiles (DebugTimings.MCMM_COLUMNS). Toujours passe : un
+// mcmm-path qui pointe sur un binaire plus ancien que la 1.0.4 ne le connait pas et ne demarre plus.
 public final class McmmStream implements Closeable {
 
     public static final int TILE_BYTES = 128 * 128;             // une tuile = une map 128x128
@@ -45,6 +49,9 @@ public final class McmmStream implements Closeable {
     private int fps;
     private boolean framePts;                                   // vrai a partir de la version 2
     private long ptsMicros = NO_PTS;                            // PTS de la derniere frame lue
+    private int[] stats;                                        // temps de la derniere frame lue
+    private ProcessHandle ffmpeg;                               // trouve au 1er releve de CPU
+    private long ffmpegCpuMillis;
 
     // Demarre le process mais ne lit PAS le header : l'appelant doit d'abord publier
     // l'instance quelque part ou stop()/close() peut l'attraper, puis appeler readHeader()
@@ -65,6 +72,7 @@ public final class McmmStream implements Closeable {
         if (renderMode.mcmmFlag() != null) {
             cmd.add(renderMode.mcmmFlag());
         }
+        cmd.add("--stats");
         cmd.add(source);
         cmd.add(Integer.toString(requestedWidth));
         cmd.add(Integer.toString(requestedHeight));
@@ -76,6 +84,9 @@ public final class McmmStream implements Closeable {
         if (tools != null) {    // null seulement si onEnable a avorte avant de les construire
             tools.exportTo(builder);
         }
+        // Sans ca, les threads OpenMP de mcmm tournent a vide entre deux passes, au detriment de
+        // ffmpeg et du serveur : 31 ms de CPU par frame LAN contre 20, mesure sur 4 coeurs.
+        builder.environment().put("OMP_WAIT_POLICY", "passive");
         this.process = builder.start();
         this.stdout = process.getInputStream();
 
@@ -102,7 +113,12 @@ public final class McmmStream implements Closeable {
         this.mapWidth = u16(header, 6);
         this.mapHeight = u16(header, 8);
         this.fps = u16(header, 10);
-        // octets 12-15 : u32 reserve, on s'en fout
+        int count = (u16(header, 12) << 16) | u16(header, 14);
+        if (count != DebugTimings.MCMM_COLUMNS.length) {
+            throw new IOException("mcmm reports " + count + " timing fields, this plugin expects "
+                    + DebugTimings.MCMM_COLUMNS.length + "; mcmm-path points to another version");
+        }
+        this.stats = new int[count];
 
         if (mapWidth <= 0 || mapHeight <= 0 || fps <= 0) {
             throw new IOException("invalid mcmm stream header: map_w=" + mapWidth
@@ -127,6 +143,26 @@ public final class McmmStream implements Closeable {
         return fps;
     }
 
+    // Les temps de la derniere frame lue.
+    public int[] getStats() {
+        return stats;
+    }
+
+    // CPU cumule du ffmpeg de mcmm (et du shell qui le lance, s'il reste). 0 tant qu'il n'est pas
+    // trouve. La recherche parcourt tous les process : une seule fois.
+    public long getFfmpegCpuMillis() {
+        if (ffmpeg == null || !ffmpeg.isAlive()) {
+            ffmpeg = process.descendants()
+                    .filter(p -> p.info().command().orElse("").contains("ffmpeg"))
+                    .findFirst().orElse(null);
+        }
+        if (ffmpeg != null) {   // ffmpeg fini, ou /proc illisible : on garde le dernier releve
+            ffmpegCpuMillis = ffmpeg.info().totalCpuDuration()
+                    .map(java.time.Duration::toMillis).orElse(ffmpegCpuMillis);
+        }
+        return ffmpegCpuMillis;
+    }
+
     // NO_PTS tant qu'aucune frame n'a ete lue, ou si mcmm parle la version 1.
     public long getPtsMicros() {
         return ptsMicros;
@@ -141,6 +177,13 @@ public final class McmmStream implements Closeable {
                 return null; // EOF pile avant une frame
             }
             ptsMicros = s64(pts);
+        }
+        byte[] raw = stdout.readNBytes(stats.length * 4);
+        if (raw.length < stats.length * 4) {
+            return null;
+        }
+        for (int i = 0; i < stats.length; i++) {
+            stats[i] = (u16(raw, i * 4) << 16) | u16(raw, i * 4 + 2);
         }
         int tiles = mapWidth * mapHeight;
         byte[][] frame = new byte[tiles][];

@@ -39,6 +39,10 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (plugin.isDaemonMode()) {
+            plugin.getDaemon().forwardCommand(sender, "video", args);
+            return true;
+        }
         if (args.length == 0) {
             sendUsage(sender, label);
             return true;

@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VMC — Visualiseur Debug CSV</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-alt: #1c232d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --cyan: #39c5cf;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px 26px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #1f2937;
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-family: monospace;
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  select, button, .btn-file {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  select:hover, button:hover, .btn-file:hover {
+    border-color: var(--accent);
+    background: var(--panel-alt);
+  }
+  .btn-file {
+    border: 1px dashed var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .empty-state {
+    margin: 48px auto;
+    max-width: 620px;
+    text-align: center;
+    padding: 48px 32px;
+    background: var(--panel);
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+  }
+  .empty-state.dragover {
+    border-color: var(--accent);
+    background: #131d2e;
+  }
+  .empty-state h2 { margin-top: 0; font-size: 18px; }
+  .empty-state p { color: var(--muted); line-height: 1.5; }
+  .meta-banner {
+    margin-top: 16px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+  }
+  .meta-item span {
+    color: var(--muted);
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 3px;
+  }
+  .meta-item strong {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    word-break: break-all;
+    font-size: 12.5px;
+  }
+  .kpi-grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+    gap: 12px;
+  }
+  .kpi {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 15px;
+  }
+  .kpi .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+  .kpi .val {
+    font-size: 21px;
+    font-weight: 700;
+    margin-top: 4px;
+    font-family: ui-monospace, monospace;
+  }
+  .kpi .sub {
+    color: var(--muted);
+    font-size: 11.5px;
+    margin-top: 3px;
+  }
+  .grid-2 {
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    margin-top: 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .grid-2 .card { margin-top: 0; }
+  .card h3 {
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .legend {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: normal;
+    flex-wrap: wrap;
+  }
+  .legend span::before {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 5px;
+    border-radius: 2px;
+    vertical-align: middle;
+  }
+  .leg-ff::before     { background: #6e7681; }
+  .leg-dct::before    { background: #58a6ff; }
+  .leg-enc::before    { background: #3fb950; }
+  .leg-srch::before   { background: #d29922; }
+  .leg-asm::before    { background: #39c5cf; }
+  .leg-send::before   { background: #bc8cff; }
+  .leg-budget::before { background: #f85149; }
+
+  .canvas-wrap {
+    position: relative;
+    width: 100%;
+  }
+  canvas {
+    width: 100%;
+    height: 240px;
+    display: block;
+    background: #0b0f15;
+    border-radius: 6px;
+    border: 1px solid #21262d;
+    cursor: crosshair;
+  }
+  .tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(13, 17, 23, 0.95);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text);
+    z-index: 1000;
+    display: none;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  table.stats {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-family: ui-monospace, monospace;
+  }
+  table.stats th, table.stats td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+  }
+  table.stats th:first-child, table.stats td:first-child {
+    text-align: left;
+  }
+  table.stats th {
+    color: var(--muted);
+    font-weight: 600;
+    background: #121720;
+  }
+  table.stats tr:hover td {
+    background: var(--panel-alt);
+  }
+  .delta-good { color: var(--green); }
+  .delta-bad  { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    VMC — Visualiseur Debug CSV
+    <span class="badge">/vmc debug on</span>
+  </h1>
+  <div class="controls">
+    <label for="dsSelect" style="color:var(--muted)">Session active :</label>
+    <select id="dsSelect" style="display:none"></select>
+    <label class="btn-file">
+      + Charger / Glisser un ou plusieurs .csv
+      <input type="file" id="fileInput" accept=".csv" multiple style="display:none">
+    </label>
+    <button id="clearBtn" style="display:none">Vider</button>
+  </div>
+</header>
+
+<div id="emptyState" class="empty-state">
+  <h2>Glisse et dépose tes fichiers <code>.csv</code> ici</h2>
+  <p>
+    Tu peux déposer un seul fichier (ex: <code>20261111-153147.csv</code>) pour analyser chaque étape frame par frame,<br>
+    ou <strong>plusieurs fichiers en même temps</strong> (ex: un test <code>daemon=off</code> et un test <code>daemon=on</code>) pour les comparer côte à côte.
+  </p>
+  <label class="btn-file" style="display:inline-block; margin-top:10px;">
+    Choisir des fichiers .csv
+    <input type="file" id="fileInputEmpty" accept=".csv" multiple style="display:none">
+  </label>
+</div>
+
+<div id="dashboard" style="display:none">
+  <div id="metaBanner" class="meta-banner"></div>
+  <div id="kpiGrid" class="kpi-grid"></div>
+
+  <!-- Comparatif multi-sessions -->
+  <div id="cmpCard" class="card" style="display:none">
+    <h3>Comparaison des fichiers chargés (Daemon OFF vs ON / Réglages)</h3>
+    <div id="cmpTableWrap" style="overflow-x:auto"></div>
+  </div>
+
+  <!-- Graphique 1 : Temps par frame vs Budget -->
+  <div class="card">
+    <h3>
+      <span>1. Décomposition du temps par frame (ms) vs Budget</span>
+      <div class="legend">
+        <span class="leg-ff">ffmpeg_us</span>
+        <span class="leg-dct">dct_us</span>
+        <span class="leg-enc">encode_us</span>
+        <span class="leg-srch">search_us</span>
+        <span class="leg-asm">assemble + symbols</span>
+        <span class="leg-send">diff + send (Netty)</span>
+        <span class="leg-budget">Budget (1/fps)</span>
+      </div>
+    </h3>
+    <div class="canvas-wrap">
+      <canvas id="timeCanvas" width="1300" height="250"></canvas>
+    </div>
+  </div>
+
+  <!-- Graphique 2 : Qualité q & Débit -->
+  <div class="card">
+    <h3>
+      <span>2. Quantification (q) & Taille du flux (kbits / frame)</span>
+      <div class="legend">
+        <span class="leg-dct">stream_bits (kbits)</span>
+        <span class="leg-budget">q (0 = qualité max, >0 = dichotomie sur mur plein)</span>
+      </div>
+    </h3>
+    <div class="canvas-wrap">
+      <canvas id="qCanvas" width="1300" height="210"></canvas>
+    </div>
+  </div>
+
+  <!-- Graphique 3 : Réseau & CPU -->
+  <div class="grid-2">
+    <div class="card">
+      <h3>
+        <span>3. Envoi Netty (send_us), Diff (diff_us) & Tuiles modifiées</span>
+        <div class="legend">
+          <span class="leg-send">send (ms)</span>
+          <span class="leg-enc">tiles_changed</span>
+        </div>
+      </h3>
+      <div class="canvas-wrap">
+        <canvas id="netCanvas" width="640" height="200"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>
+        <span>4. Charge CPU (% machine & cœurs consommés)</span>
+        <div class="legend">
+          <span class="leg-budget">system_cpu_pct (%)</span>
+          <span class="leg-dct">mcmm_cpu (ms/frame)</span>
+        </div>
+      </h3>
+      <div class="canvas-wrap">
+        <canvas id="cpuCanvas" width="640" height="200"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tableau détaillé des centiles -->
+  <div class="card">
+    <h3>5. Bilan statistique détaillé de la session (Moyenne / Médiane / P95 / P99 / Max)</h3>
+    <div id="statsTableWrap" style="overflow-x:auto"></div>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip"></div>
+
+<script>
+let datasets = [];
+let currentDs = null;
+
+function parseCsvText(filename, text) {
+  const meta = {
+    file: filename,
+    name: "",
+    source: "",
+    daemon: "?",
+    render: "?",
+    wall: "?",
+    width: 0,
+    height: 0,
+    fps: 0
+  };
+  const rawLines = text.split(/\r?\n/);
+  const dataLines = [];
+  for (const line of rawLines) {
+    const s = line.trim();
+    if (!s) continue;
+    if (s.startsWith("#")) {
+      const parts = s.replace(/^#+/, "").trim().split(",");
+      for (const p of parts) {
+        const eq = p.indexOf("=");
+        if (eq > 0) {
+          const k = p.slice(0, eq).trim();
+          const v = p.slice(eq + 1).trim();
+          if (k === "width" || k === "height" || k === "fps") {
+            meta[k] = parseInt(v, 10) || 0;
+          } else {
+            meta[k] = v;
+          }
+        }
+      }
+    } else {
+      dataLines.push(s);
+    }
+  }
+  if (dataLines.length < 2) return null;
+
+  const headers = dataLines[0].split(",").map(h => h.trim());
+  const rows = [];
+  for (let i = 1; i < dataLines.length; i++) {
+    const cols = dataLines[i].split(",");
+    if (cols.length < 10) continue;
+    const obj = {};
+    for (let c = 0; c < headers.length; c++) {
+      const raw = cols[c] !== undefined ? cols[c].trim() : "";
+      obj[headers[c]] = raw === "" ? null : Number(raw);
+    }
+    rows.push(obj);
+  }
+  if (!rows.length) return null;
+
+  // Inférence automatique pour les CSV générés avant l'ajout de l'en-tête "# name=..."
+  const budget = rows[0].budget_us || 50000;
+  if (!meta.fps && budget > 0) {
+    meta.fps = Math.round(1000000 / budget);
+  }
+  let maxBits = 0, maxTiles = 0;
+  for (const r of rows) {
+    if ((r.stream_bits || 0) > maxBits) maxBits = r.stream_bits;
+    if ((r.tiles_changed || 0) > maxTiles) maxTiles = r.tiles_changed;
+  }
+  if (meta.render === "?") {
+    if (maxBits > 0) {
+      meta.render = "data";
+      if (maxTiles > 8 || maxBits > 800000) {
+        meta.wall = "lan";
+        meta.width = 5; meta.height = 3;
+      } else {
+        meta.wall = "wan";
+        meta.width = 4; meta.height = 2;
+      }
+    } else {
+      meta.render = "normal/dither";
+    }
+  }
+  return { meta, rows, summary: computeSummary(meta, rows) };
+}
+
+function pctile(sortedArr, p) {
+  if (!sortedArr.length) return 0;
+  const idx = Math.min(sortedArr.length - 1, Math.max(0, Math.floor(sortedArr.length * p)));
+  return sortedArr[idx];
+}
+
+function calcStats(arr) {
+  if (!arr.length) return { avg: 0, p50: 0, p95: 0, p99: 0, max: 0 };
+  const s = arr.slice().sort((a, b) => a - b);
+  const sum = s.reduce((a, b) => a + b, 0);
+  return {
+    avg: sum / s.length,
+    p50: pctile(s, 0.50),
+    p95: pctile(s, 0.95),
+    p99: pctile(s, 0.99),
+    max: s[s.length - 1]
+  };
+}
+
+function computeSummary(meta, rows) {
+  const n = rows.length;
+  const budget_us = rows[0].budget_us || 50000;
+  const fps = meta.fps || Math.round(1000000 / budget_us);
+  const dur_s = n > 1 ? (rows[n - 1].t_ms - rows[0].t_ms) / 1000 : 0;
+
+  const work_ms    = rows.map(r => ((r.ffmpeg_us || 0) + (r.convert_us || 0) + (r.diff_us || 0) + (r.send_us || 0)) / 1000);
+  const ffmpeg_ms  = rows.map(r => (r.ffmpeg_us || 0) / 1000);
+  const read_ms    = rows.map(r => (r.read_us || 0) / 1000);
+  const write_ms   = rows.map(r => (r.mcmm_write_us || 0) / 1000);
+  const cpu_ms     = rows.map(r => (r.mcmm_cpu_us || 0) / 1000);
+  const convert_ms = rows.map(r => (r.convert_us || 0) / 1000);
+  const dct_ms     = rows.map(r => (r.dct_us || 0) / 1000);
+  const encode_ms  = rows.map(r => (r.encode_us || 0) / 1000);
+  const search_ms  = rows.map(r => (r.search_us || 0) / 1000);
+  const asm_ms     = rows.map(r => (r.assemble_us || 0) / 1000);
+  const sym_ms     = rows.map(r => (r.symbols_us || 0) / 1000);
+  const diff_us    = rows.map(r => (r.diff_us || 0));
+  const send_ms    = rows.map(r => (r.send_us || 0) / 1000);
+  const sleep_ms   = rows.map(r => (r.sleep_us || 0) / 1000);
+  const late_ms    = rows.map(r => (r.late_us || 0) / 1000);
+  const q_vals     = rows.map(r => (r.q || 0));
+  const bits_vals  = rows.map(r => (r.stream_bits || 0));
+
+  const workSt = calcStats(work_ms);
+  const budgetMs = budget_us / 1000;
+  const avgBits = bits_vals.reduce((a, b) => a + b, 0) / n;
+
+  // CPU samples
+  const cpuSamples = rows.filter(r => r.java_cpu_ms !== null && r.java_cpu_ms !== undefined);
+  const cpuCores = { mcmm: 0, ffmpeg: 0, netty: 0, javaOther: 0, systemPct: 0 };
+  if (cpuSamples.length >= 2) {
+    const dt = cpuSamples[cpuSamples.length - 1].t_ms - cpuSamples[0].t_ms;
+    if (dt > 0) {
+      const totMcmmMs = rows.reduce((acc, r) => acc + (r.mcmm_cpu_us || 0), 0) / 1000;
+      const dFf = Math.max(0, (cpuSamples[cpuSamples.length - 1].ffmpeg_cpu_ms || 0) - (cpuSamples[0].ffmpeg_cpu_ms || 0));
+      const dJv = Math.max(0, (cpuSamples[cpuSamples.length - 1].java_cpu_ms || 0) - (cpuSamples[0].java_cpu_ms || 0));
+      const dNt = Math.max(0, (cpuSamples[cpuSamples.length - 1].netty_cpu_ms || 0) - (cpuSamples[0].netty_cpu_ms || 0));
+      cpuCores.mcmm = totMcmmMs / dt;
+      cpuCores.ffmpeg = dFf / dt;
+      cpuCores.netty = dNt / dt;
+      cpuCores.javaOther = Math.max(0, (dJv - dNt) / dt);
+      cpuCores.systemPct = cpuSamples.reduce((a, r) => a + (r.system_cpu_pct || 0), 0) / cpuSamples.length;
+    }
+  }
+
+  return {
+    frames: n,
+    duration_s: dur_s,
+    budget_ms: budgetMs,
+    fps,
+    eff_fps: dur_s > 0 ? n / dur_s : fps,
+    margin_avg: budgetMs / (workSt.avg || 1),
+    margin_p99: budgetMs / (workSt.p99 || 1),
+    over_budget_frames: work_ms.filter(w => w > budgetMs).length,
+    late_frames: rows.filter(r => (r.late_us || 0) > 0).length,
+    skipped_viewers: rows.reduce((a, r) => a + (r.viewers_skipped || 0), 0),
+    saturated_pct: 100 * rows.filter(r => (r.q || 0) > 0).length / n,
+    q: calcStats(q_vals),
+    bitrate_mbps: (avgBits * fps) / 1e6,
+    work_ms: workSt,
+    ffmpeg_ms: calcStats(ffmpeg_ms),
+    read_ms: calcStats(read_ms),
+    write_ms: calcStats(write_ms),
+    cpu_ms: calcStats(cpu_ms),
+    convert_ms: calcStats(convert_ms),
+    dct_ms: calcStats(dct_ms),
+    encode_ms: calcStats(encode_ms),
+    search_ms: calcStats(search_ms),
+    asm_ms: calcStats(asm_ms),
+    sym_ms: calcStats(sym_ms),
+    diff_us: calcStats(diff_us),
+    send_ms: calcStats(send_ms),
+    sleep_ms: calcStats(sleep_ms),
+    late_ms: calcStats(late_ms),
+    cpu_cores: cpuCores
+  };
+}
+
+function updateUI() {
+  const empty = document.getElementById("emptyState");
+  const dash = document.getElementById("dashboard");
+  const sel = document.getElementById("dsSelect");
+  const clearBtn = document.getElementById("clearBtn");
+
+  if (!datasets.length) {
+    empty.style.display = "block";
+    dash.style.display = "none";
+    sel.style.display = "none";
+    clearBtn.style.display = "none";
+    return;
+  }
+
+  empty.style.display = "none";
+  dash.style.display = "block";
+  sel.style.display = "inline-block";
+  clearBtn.style.display = "inline-block";
+
+  const prevIdx = sel.value ? Number(sel.value) : datasets.length - 1;
+  sel.innerHTML = "";
+  datasets.forEach((ds, idx) => {
+    const opt = document.createElement("option");
+    opt.value = idx;
+    const m = ds.meta;
+    opt.textContent = `${m.file} — daemon=${m.daemon} | ${m.render} ${m.width}x${m.height}@${ds.summary.fps}fps`;
+    sel.appendChild(opt);
+  });
+  const activeIdx = Math.min(datasets.length - 1, Math.max(0, prevIdx));
+  sel.value = activeIdx;
+  renderComparison();
+  renderSession(datasets[activeIdx]);
+}
+
+function fmtDelta(val, ref, lowerIsBetter = true) {
+  if (!ref || ref === 0) return "";
+  const pct = ((val - ref) / ref) * 100;
+  if (Math.abs(pct) < 0.05) return `<span style="color:var(--muted)"> (0%)</span>`;
+  const good = lowerIsBetter ? pct < 0 : pct > 0;
+  const cls = good ? "delta-good" : "delta-bad";
+  const sign = pct > 0 ? "+" : "";
+  return ` <span class="${cls}">(${sign}${pct.toFixed(1)}%)</span>`;
+}
+
+function renderComparison() {
+  const card = document.getElementById("cmpCard");
+  if (datasets.length < 2) {
+    card.style.display = "none";
+    return;
+  }
+  card.style.display = "block";
+  const ref = datasets[0].summary;
+  let html = `<table class="stats"><thead><tr>
+    <th>Fichier CSV</th>
+    <th>Nom Vidéo (Cache)</th>
+    <th>Daemon</th>
+    <th>Mode & Écran</th>
+    <th>Work moy (ms)</th>
+    <th>Convert moy (ms)</th>
+    <th>Convert P99 (ms)</th>
+    <th>Diff moy (µs)</th>
+    <th>Send moy (ms)</th>
+    <th>Marge moy</th>
+    <th>CPU mcmm (cœurs)</th>
+    <th>CPU Java+Netty</th>
+  </tr></thead><tbody>`;
+
+  datasets.forEach((ds, i) => {
+    const m = ds.meta, s = ds.summary;
+    const shortCache = m.name ? (m.name.length > 18 ? m.name.slice(0, 18) + "…" : m.name) : "(ancien CSV)";
+    const isRef = i === 0;
+    const jvCores = s.cpu_cores.netty + s.cpu_cores.javaOther;
+    const refJvCores = ref.cpu_cores.netty + ref.cpu_cores.javaOther;
+    html += `<tr>
+      <td><strong>${m.file}</strong></td>
+      <td title="${m.name || ''}">${shortCache}</td>
+      <td><span class="badge">${m.daemon}</span></td>
+      <td>${m.render} (${m.width}x${m.height}@${s.fps}fps)</td>
+      <td>${s.work_ms.avg.toFixed(2)}${isRef ? "" : fmtDelta(s.work_ms.avg, ref.work_ms.avg, true)}</td>
+      <td>${s.convert_ms.avg.toFixed(2)}${isRef ? "" : fmtDelta(s.convert_ms.avg, ref.convert_ms.avg, true)}</td>
+      <td>${s.convert_ms.p99.toFixed(2)}${isRef ? "" : fmtDelta(s.convert_ms.p99, ref.convert_ms.p99, true)}</td>
+      <td>${s.diff_us.avg.toFixed(1)}${isRef ? "" : fmtDelta(s.diff_us.avg, ref.diff_us.avg, true)}</td>
+      <td>${s.send_ms.avg.toFixed(2)}${isRef ? "" : fmtDelta(s.send_ms.avg, ref.send_ms.avg, true)}</td>
+      <td>x${s.margin_avg.toFixed(2)}${isRef ? "" : fmtDelta(s.margin_avg, ref.margin_avg, false)}</td>
+      <td>${s.cpu_cores.mcmm.toFixed(2)} c</td>
+      <td>${jvCores.toFixed(2)} c${isRef ? "" : fmtDelta(jvCores, refJvCores, true)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  document.getElementById("cmpTableWrap").innerHTML = html;
+}
+
+function renderSession(ds) {
+  currentDs = ds;
+  const m = ds.meta, s = ds.summary;
+  document.getElementById("metaBanner").innerHTML = `
+    <div class="meta-item">
+      <span>Fichier CSV</span>
+      <strong>${m.file}</strong>
+    </div>
+    <div class="meta-item">
+      <span>Nom Vidéo en Cache (SHA-256 / Fichier)</span>
+      <strong>${m.name || "(non présent — CSV enregistré avant la màj)"}</strong>
+    </div>
+    <div class="meta-item">
+      <span>Source d'origine</span>
+      <strong>${m.source || "-"}</strong>
+    </div>
+    <div class="meta-item">
+      <span>Paramètres de la vidéo</span>
+      <strong>daemon=${m.daemon} | render=${m.render} (wall=${m.wall}) | ${m.width}x${m.height} maps @ ${s.fps} fps</strong>
+    </div>
+  `;
+
+  const c = s.cpu_cores;
+  document.getElementById("kpiGrid").innerHTML = `
+    <div class="kpi">
+      <div class="label">Travail Total / Frame</div>
+      <div class="val">${s.work_ms.avg.toFixed(2)} ms</div>
+      <div class="sub">P99: ${s.work_ms.p99.toFixed(2)} ms / Budget: ${s.budget_ms.toFixed(1)} ms</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Marge Temps Réel</div>
+      <div class="val" style="color:${s.margin_avg >= 1.2 ? 'var(--green)' : 'var(--red)'}">x${s.margin_avg.toFixed(2)}</div>
+      <div class="sub">P99: x${s.margin_p99.toFixed(2)} (${s.over_budget_frames} frames > budget)</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Conversion C (mcmm)</div>
+      <div class="val">${s.convert_ms.avg.toFixed(2)} ms</div>
+      <div class="sub">DCT ${s.dct_ms.avg.toFixed(1)} + Enc ${s.encode_ms.avg.toFixed(1)} + Search ${s.search_ms.avg.toFixed(1)} ms</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Diff & Envoi Netty</div>
+      <div class="val">${s.send_ms.avg.toFixed(2)} ms</div>
+      <div class="sub">Diff: ${s.diff_us.avg.toFixed(0)} µs | Send P99: ${s.send_ms.p99.toFixed(2)} ms</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Débit & Qualité Data</div>
+      <div class="val">${s.bitrate_mbps.toFixed(2)} Mb/s</div>
+      <div class="sub">q moy: ${s.q.avg.toFixed(1)} (max ${s.q.max}) | Murs pleins: ${s.saturated_pct.toFixed(1)}%</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Charge CPU (Cœurs)</div>
+      <div class="val">${c.systemPct.toFixed(0)}% sys</div>
+      <div class="sub">mcmm ${c.mcmm.toFixed(2)}c | ff ${c.ffmpeg.toFixed(2)}c | Netty ${c.netty.toFixed(2)}c</div>
+    </div>
+  `;
+
+  renderStatsTable(s);
+  drawTimeChart(ds);
+  drawQChart(ds);
+  drawNetChart(ds);
+  drawCpuChart(ds);
+}
+
+function renderStatsTable(s) {
+  const rowsSpec = [
+    ["Travail total frame (ms)", s.work_ms, 2],
+    ["  ├─ Attente ffmpeg (ffmpeg_us, ms)", s.ffmpeg_ms, 2],
+    ["  ├─ Conversion totale mcmm (convert_us, ms)", s.convert_ms, 2],
+    ["  │    ├─ DCT 8x8 AAN (dct_us, ms)", s.dct_ms, 2],
+    ["  │    ├─ Quantif + Huffman q=0 (encode_us, ms)", s.encode_ms, 2],
+    ["  │    ├─ Dichotomie q + troncature (search_us, ms)", s.search_ms, 2],
+    ["  │    ├─ Assemblage flux bit-a-bit (assemble_us, ms)", s.asm_ms, 2],
+    ["  │    └─ Mots -> Symboles -> Tuiles (symbols_us, ms)", s.sym_ms, 2],
+    ["  ├─ Comparaison tuiles (diff_us, µs)", s.diff_us, 1],
+    ["  └─ Écriture paquets Netty (send_us, ms)", s.send_ms, 2],
+    ["Temps CPU mcmm tous threads (mcmm_cpu_us, ms)", s.cpu_ms, 2],
+    ["Attente lecture pipe côté Java (read_us, ms)", s.read_ms, 2],
+    ["Écriture pipe frame précédente (mcmm_write_us, ms)", s.write_ms, 2],
+    ["Marge de sommeil (sleep_us, ms)", s.sleep_ms, 2],
+    ["Retard horloge (late_us, ms)", s.late_ms, 2],
+    ["Quantificateur JPEG (q)", s.q, 1]
+  ];
+
+  let html = `<table class="stats"><thead><tr>
+    <th>Métrique</th><th>Moyenne</th><th>Médiane (P50)</th><th>P95</th><th>P99</th><th>Max</th>
+  </tr></thead><tbody>`;
+  for (const [label, st, dec] of rowsSpec) {
+    html += `<tr>
+      <td>${label}</td>
+      <td>${st.avg.toFixed(dec)}</td>
+      <td>${st.p50.toFixed(dec)}</td>
+      <td>${st.p95.toFixed(dec)}</td>
+      <td>${st.p99.toFixed(dec)}</td>
+      <td>${st.max.toFixed(dec)}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  document.getElementById("statsTableWrap").innerHTML = html;
+}
+
+function drawTimeChart(ds) {
+  const rows = ds.rows, budgetMs = ds.summary.budget_ms;
+  const canvas = document.getElementById("timeCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 48, padR = 16, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  let maxVal = budgetMs * 1.25;
+  for (const r of rows) {
+    const tot = ((r.ffmpeg_us || 0) + (r.convert_us || 0) + (r.diff_us || 0) + (r.send_us || 0)) / 1000;
+    if (tot > maxVal) maxVal = tot;
+  }
+  const yOf = ms => padT + plotH * (1 - ms / maxVal);
+
+  ctx.strokeStyle = "#1f2733";
+  ctx.fillStyle = "#8b949e";
+  ctx.font = "11px monospace";
+  for (let i = 0; i <= 4; i++) {
+    const ms = (maxVal * i) / 4;
+    const y = yOf(ms);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(ms.toFixed(0) + "ms", 4, y + 4);
+  }
+
+  const n = rows.length;
+  const step = Math.max(1, Math.floor(n / plotW));
+  for (let i = 0; i < n; i += step) {
+    const r = rows[i];
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const bw = Math.max(1.5, plotW / (n / step));
+    const ff = (r.ffmpeg_us || 0) / 1000;
+    const dct = (r.dct_us || 0) / 1000;
+    const enc = (r.encode_us || 0) / 1000;
+    const srch = (r.search_us || 0) / 1000;
+    const asm = Math.max(0, (r.convert_us || 0) / 1000 - dct - enc - srch);
+    const send = ((r.diff_us || 0) + (r.send_us || 0)) / 1000;
+
+    let cur = 0;
+    const bars = [
+      [ff, "#6e7681"],
+      [dct, "#58a6ff"],
+      [enc, "#3fb950"],
+      [srch, "#d29922"],
+      [asm, "#39c5cf"],
+      [send, "#bc8cff"]
+    ];
+    for (const [v, col] of bars) {
+      if (v <= 0) continue;
+      const y1 = yOf(cur + v), y2 = yOf(cur);
+      ctx.fillStyle = col;
+      ctx.fillRect(x, y1, bw, Math.max(1, y2 - y1));
+      cur += v;
+    }
+  }
+
+  // Ligne budget
+  const by = yOf(budgetMs);
+  ctx.strokeStyle = "#f85149";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(padL, by); ctx.lineTo(W - padR, by); ctx.stroke();
+
+  attachHover(canvas, rows, padL, plotW, r => {
+    const tot = ((r.ffmpeg_us || 0) + (r.convert_us || 0) + (r.diff_us || 0) + (r.send_us || 0)) / 1000;
+    return `Frame #${r.frame} (pts ${(r.pts_ms / 1000).toFixed(2)}s)\n`
+         + `Total work : ${tot.toFixed(2)} ms / ${budgetMs.toFixed(1)} ms\n`
+         + `├─ ffmpeg  : ${((r.ffmpeg_us || 0) / 1000).toFixed(2)} ms\n`
+         + `├─ convert : ${((r.convert_us || 0) / 1000).toFixed(2)} ms (DCT ${((r.dct_us||0)/1000).toFixed(1)}, Enc ${((r.encode_us||0)/1000).toFixed(1)}, Srch ${((r.search_us||0)/1000).toFixed(1)})\n`
+         + `├─ diff    : ${r.diff_us || 0} µs\n`
+         + `└─ send    : ${((r.send_us || 0) / 1000).toFixed(2)} ms`;
+  });
+}
+
+function drawQChart(ds) {
+  const rows = ds.rows;
+  const canvas = document.getElementById("qCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 48, padR = 44, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = rows.length;
+
+  let maxKb = 100, maxQ = 20;
+  for (const r of rows) {
+    if ((r.stream_bits || 0) / 1000 > maxKb) maxKb = (r.stream_bits || 0) / 1000;
+    if ((r.q || 0) > maxQ) maxQ = r.q || 0;
+  }
+
+  ctx.strokeStyle = "#58a6ff";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - ((rows[i].stream_bits || 0) / 1000) / maxKb);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = "#f85149";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - (rows[i].q || 0) / maxQ);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = "#58a6ff";
+  ctx.font = "11px monospace";
+  ctx.fillText(maxKb.toFixed(0) + " kb", 4, padT + 9);
+  ctx.fillStyle = "#f85149";
+  ctx.fillText("q=" + maxQ, W - padR + 4, padT + 9);
+
+  attachHover(canvas, rows, padL, plotW, r =>
+    `Frame #${r.frame} (pts ${(r.pts_ms / 1000).toFixed(2)}s)\n`
+    + `q = ${r.q || 0}\n`
+    + `stream_bits = ${((r.stream_bits || 0) / 1000).toFixed(1)} kbits`
+  );
+}
+
+function drawNetChart(ds) {
+  const rows = ds.rows;
+  const canvas = document.getElementById("netCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 44, padR = 44, padT = 14, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = rows.length;
+
+  let maxSend = 2, maxTiles = 15;
+  for (const r of rows) {
+    if ((r.send_us || 0) / 1000 > maxSend) maxSend = (r.send_us || 0) / 1000;
+    if ((r.tiles_changed || 0) > maxTiles) maxTiles = r.tiles_changed || 0;
+  }
+
+  ctx.strokeStyle = "#3fb950";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - (rows[i].tiles_changed || 0) / maxTiles);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = "#bc8cff";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - ((rows[i].send_us || 0) / 1000) / maxSend);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = "#bc8cff";
+  ctx.font = "11px monospace";
+  ctx.fillText(maxSend.toFixed(1) + "ms", 4, padT + 9);
+  ctx.fillStyle = "#3fb950";
+  ctx.fillText(maxTiles + " tuiles", W - padR + 4, padT + 9);
+
+  attachHover(canvas, rows, padL, plotW, r =>
+    `Frame #${r.frame}\n`
+    + `send_us : ${((r.send_us || 0) / 1000).toFixed(2)} ms\n`
+    + `diff_us : ${r.diff_us || 0} µs\n`
+    + `tiles_changed : ${r.tiles_changed || 0}`
+  );
+}
+
+function drawCpuChart(ds) {
+  const rows = ds.rows;
+  const canvas = document.getElementById("cpuCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const padL = 44, padR = 44, padT = 14, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = rows.length;
+
+  let maxMcmm = 50;
+  for (const r of rows) {
+    if ((r.mcmm_cpu_us || 0) / 1000 > maxMcmm) maxMcmm = (r.mcmm_cpu_us || 0) / 1000;
+  }
+
+  ctx.strokeStyle = "#58a6ff";
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - ((rows[i].mcmm_cpu_us || 0) / 1000) / maxMcmm);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Courbe system_cpu_pct sur les points échantillonnés
+  ctx.strokeStyle = "#f85149";
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < n; i++) {
+    const pct = rows[i].system_cpu_pct;
+    if (pct === null || pct === undefined) continue;
+    const x = padL + (i / (n - 1 || 1)) * plotW;
+    const y = padT + plotH * (1 - pct / 100);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.fillStyle = "#58a6ff";
+  ctx.font = "11px monospace";
+  ctx.fillText(maxMcmm.toFixed(0) + "ms", 4, padT + 9);
+  ctx.fillStyle = "#f85149";
+  ctx.fillText("100%", W - padR + 4, padT + 9);
+
+  attachHover(canvas, rows, padL, plotW, r =>
+    `Frame #${r.frame}\n`
+    + `mcmm_cpu : ${((r.mcmm_cpu_us || 0) / 1000).toFixed(2)} ms\n`
+    + (r.system_cpu_pct !== null ? `system_cpu : ${r.system_cpu_pct}%` : "")
+  );
+}
+
+function attachHover(canvas, rows, padL, plotW, formatter) {
+  const tip = document.getElementById("tooltip");
+  canvas.onmousemove = e => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const ratio = (cx - padL) / plotW;
+    if (ratio < 0 || ratio > 1 || !rows.length) {
+      tip.style.display = "none";
+      return;
+    }
+    const idx = Math.min(rows.length - 1, Math.max(0, Math.round(ratio * (rows.length - 1))));
+    tip.textContent = formatter(rows[idx]);
+    tip.style.whiteSpace = "pre";
+    tip.style.display = "block";
+    tip.style.left = Math.min(window.innerWidth - 280, e.clientX + 14) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  };
+  canvas.onmouseleave = () => {
+    tip.style.display = "none";
+  };
+}
+
+function handleFiles(fileList) {
+  Array.from(fileList).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const parsed = parseCsvText(file.name, e.target.result);
+      if (parsed) {
+        datasets.push(parsed);
+        updateUI();
+      }
+    };
+    reader.readAsText(file);
+  });
+}
+
+document.getElementById("fileInput").addEventListener("change", e => handleFiles(e.target.files));
+document.getElementById("fileInputEmpty").addEventListener("change", e => handleFiles(e.target.files));
+document.getElementById("dsSelect").addEventListener("change", e => {
+  renderSession(datasets[Number(e.target.value)]);
+});
+document.getElementById("clearBtn").addEventListener("click", () => {
+  datasets = [];
+  updateUI();
+});
+
+const emptyEl = document.getElementById("emptyState");
+window.addEventListener("dragover", e => {
+  e.preventDefault();
+  emptyEl.classList.add("dragover");
+});
+window.addEventListener("dragleave", () => emptyEl.classList.remove("dragover"));
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  emptyEl.classList.remove("dragover");
+  if (e.dataTransfer && e.dataTransfer.files.length) {
+    handleFiles(e.dataTransfer.files);
+  }
+});
+</script>
+</body>
+</html>

@@ -27,7 +27,7 @@ All commands require the `minecraftvideo.use` permission (default: OP).
 | `/video stop` | Stops playback, completely removes the virtual screen, and clears the queue. |
 | `/video seek <+s\|-s\|[hh:]mm:ss>` | Jumps relative (e.g., `+10`, `-30`) or absolute (e.g., `1:30`) in the video. |
 | `/video skip` / `/video next` | Skips the current video and advances to the next queued item. |
-| `/video status` | Displays decoding latency, effective FPS, and system headroom metrics. |
+| `/video status` | Displays the last minute of timings: time per frame, real margin, late and skipped frames, CPU use. |
 
 ### Playlist & Queue Commands
 - `/video queue add <url-or-path>`: Appends a media source to the queue. Starts playback immediately if idle.
@@ -73,6 +73,28 @@ Adjusts the 3D text overlay placement for subtitles:
 - **`size <scale>`**: Text size scale (default: `1.0`, range: `0.1` to `20.0`).
 - **`height <value>`**: Blocks relative to the bottom edge of the screen (default: `0.45`, range: `-20.0` to `20.0`).
 - **`depth <value>`**: Distance in blocks in front of the screen (default: `0.05`, range: `-10.0` to `10.0`).
+
+### Debug Timings
+```
+/vmc debug <on|off>
+```
+Measures where each frame's time goes. While it is on, each playing video writes one row per frame to `plugins/<plugin folder>/debug/<date>.csv`, from waiting on ffmpeg to sending the map packets. `/video status` shows the last minute of the same measures, with or without the CSV. It lasts until the next server restart and old files are not deleted. Times are in microseconds:
+
+| Column | Meaning |
+|---|---|
+| `budget_us` | Time available per frame (1/fps) |
+| `read_us` | Plugin waiting for the frame from `mcmm` |
+| `ffmpeg_us` | `mcmm` waiting for the frame from ffmpeg |
+| `convert_us` | `mcmm` converting the whole frame; in `data` mode split into `dct_us`, `encode_us`, `search_us`, `assemble_us`, `symbols_us` |
+| `mcmm_write_us` | `mcmm` writing the previous frame; high means it is waiting for the plugin, so it is not the limit |
+| `mcmm_cpu_us` | CPU used by `mcmm` for this frame, all threads |
+| `q`, `stream_bits` | Quantizer and stream size of this frame (`data` mode) |
+| `sent` | 0 when the frame was skipped to catch up with the audio |
+| `diff_us`, `send_us` | Plugin comparing tiles, then writing packets |
+| `tiles_changed`, `viewers`, `viewers_skipped` | Tiles to send, viewers, and viewers skipped because their connection is full |
+| `sleep_us`, `late_us` | Time left in the budget, or how far the image is behind |
+| `ffmpeg_cpu_ms`, `java_cpu_ms`, `netty_cpu_ms` | Total CPU so far, sampled once per second; Netty threads compress and send the packets |
+| `system_cpu_pct` | CPU load of the whole machine, sampled once per second |
 
 ### Render Mode
 ```
@@ -176,18 +198,18 @@ flowchart TD
     VID -. "position of the<br/>frame just sent" .-> CUE
 ```
 
-**Video encoding and sending.** mcmm turns each frame into tiles of map colour ids, then the plugin sends only what changed. In `data` mode the tiles hold a compressed picture instead of the picture itself.
+**Video encoding and sending.** mcmm turns each frame into tiles of map colour ids, then the plugin sends only what changed. In `data` mode the tiles hold a compressed picture instead of the picture itself. In this mode, ffmpeg outputs full-range BT.601 YCbCr directly, so neither ffmpeg nor mcmm converts through RGB. It needs an ffmpeg recent enough to have the `checksum` option of the `showinfo` filter. The plugin also starts mcmm with `OMP_WAIT_POLICY=passive`: its idle threads sleep between passes instead of spinning, which leaves the CPU to ffmpeg and the server.
 
 ```mermaid
 flowchart TD
     subgraph ENC["mcmm: native process"]
-        FF["Internal ffmpeg: seek, fps filter, scale and pad<br/>RGB frames + timestamps"] --> MODE{"Render mode?"}
+        FF["Internal ffmpeg: seek, fps filter, scale and pad<br/>timestamps + RGB frames (data mode: YCbCr 4:2:0)"] --> MODE{"Render mode?"}
         MODE -- "normal" --> LUT["Nearest palette colour<br/>(precomputed LUT)"]
         MODE -- "dither" --> DITH["Palette colour +<br/>Floyd-Steinberg"]
         MODE -- "strict" --> STRICT["Whole-number scale in C,<br/>then palette colour"]
-        MODE -- "data" --> DCT["YCbCr 4:2:0, 16x16 macroblocks, 8x8 DCT<br/>picture: 848x464 / 1232x720"]
+        MODE -- "data" --> DCT["16x16 macroblocks, fast 8x8 DCT<br/>(AAN, 32-bit floats, SIMD)<br/>picture: 848x464 / 1232x720"]
         DCT --> Q["Finest global q that fits the wall<br/>q = 0 first, then bisection"]
-        Q --> VLC["Quantize, zigzag, RLE, JPEG Huffman<br/>macroblocks capped at 2047 bits"]
+        Q --> VLC["Quantize, zigzag, RLE, JPEG Huffman<br/>macroblocks capped at 2047 bits<br/>(the q = 0 attempt is reused when it fits)"]
         VLC --> IDX["q + row starts + macroblock lengths + blocks,<br/>zeros fill the remaining capacity"]
         IDX --> SYM["31-bit words to 4 base-244 symbols,<br/>one map colour id per module"]
         SYM --> WALL["Wall: data + finder and alignment markers<br/>4x2 / 5x3 maps"]

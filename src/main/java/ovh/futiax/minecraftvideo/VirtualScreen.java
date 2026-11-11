@@ -56,7 +56,12 @@ public final class VirtualScreen {
         return ENTITY_ID_COUNTER.getAndIncrement();
     }
 
-    private static final int SCREEN_DISTANCE = 4;   // blocs entre le joueur et le plan de l'ecran
+    // Distance visee entre l'oeil et la surface des maps quand rien d'autre ne l'impose : l'ecran
+    // occupe les deux tiers du champ en 16:9, FOV 70 (vertical). 2,489 = 2 tan(51,2 deg),
+    // 1,400 = 2 tan(35 deg). 4x3 -> 3,2 blocs, 7x4 -> 4,3, 16x9 -> 9,6.
+    static double viewDistance(int width, int height) {
+        return Math.max(2, 1.5 * Math.max(width / 2.489, height / 1.400));
+    }
     private static final byte FLAG_INVISIBLE = 0x20;
 
     private final int width;
@@ -93,11 +98,17 @@ public final class VirtualScreen {
     private final Map<UUID, boolean[]> missed = new ConcurrentHashMap<>();
     private final AtomicInteger droppedFrames = new AtomicInteger();
 
+    // Detail du dernier sendFrame, pour /vmc debug : lus par le thread qui l'a appele.
+    private long lastDiffNanos;
+    private int lastChangedTiles;
+    private int lastViewers;
+    private int lastSkippedViewers;
+
     // anchor est capturee sur le main thread, et on n'en tire qu'une position de bloc et un
     // yaw : la Location n'est jamais relue, donc l'ecran ne suit pas le joueur qui l'a pose.
     public VirtualScreen(Location anchor, int width, int height, boolean withControlBar,
                          SubtitleSettings subtitleSettings, int viewerRange,
-                         PostEffects postEffects, String postEffect) {
+                         PostEffects postEffects, String postEffect, double distance) {
         this.postEffects = postEffects;
         this.postEffect = postEffect;
         this.width = width;
@@ -161,17 +172,28 @@ public final class VirtualScreen {
         this.audienceUnitX = facing.getModX();
         this.audienceUnitZ = facing.getModZ();
 
-        // Plan de l'ecran a SCREEN_DISTANCE blocs devant le joueur, centre horizontalement sur
-        // sa ligne de vue, rangee du bas au niveau des pieds.
-        int centerX = anchor.getBlockX() + playerDirection.getModX() * SCREEN_DISTANCE;
-        int centerZ = anchor.getBlockZ() + playerDirection.getModZ() * SCREEN_DISTANCE;
+        // Les frames sont sur la grille de blocs : on prend la rangee qui met la surface des maps
+        // au plus pres de `distance` blocs de l'oeil, et la colonne qui centre l'ecran sur le
+        // joueur. Ecart d'un demi-bloc au pire dans les deux sens. Rangee du bas au niveau des
+        // pieds. La surface d'une map est a 1/16 de bloc du bord de son bloc, cote mur.
+        boolean alongX = playerDirection.getModX() != 0;
+        int forward = playerDirection.getModX() + playerDirection.getModZ();    // +1 ou -1
+        double along = alongX ? anchor.getX() : anchor.getZ();
+        double toEdge = along - Math.floor(along);      // du joueur au bord de son bloc, cote ecran
+        if (forward > 0) {
+            toEdge = 1 - toEdge;
+        }
+        int blocks = Math.max(1, (int) Math.round(distance - toEdge + 0.0625));
+        int plane = (int) Math.floor(along) + forward * blocks;
+        double side = alongX ? anchor.getZ() : anchor.getX();
+        int first = (int) Math.round(side - (rightX + rightZ) * (width - 1) / 2.0 - 0.5);
+        int originX = alongX ? plane : first;
+        int originZ = alongX ? first : plane;
         int baseY = anchor.getBlockY();
-        int originX = centerX - rightX * ((width - 1) / 2);
-        int originZ = centerZ - rightZ * ((width - 1) / 2);
 
-        this.centerX = centerX + 0.5;
+        this.centerX = originX + rightX * (width - 1) / 2.0 + 0.5;
         this.centerY = baseY + (height - 1) / 2.0 + 0.5;
-        this.centerZ = centerZ + 0.5;
+        this.centerZ = originZ + rightZ * (width - 1) / 2.0 + 0.5;
 
         for (int row = 0; row < height; row++) {
             for (int col = 0; col < width; col++) {
@@ -242,6 +264,7 @@ public final class VirtualScreen {
     // Appelable depuis un thread async : l'envoi de paquets packetevents est thread-safe (il
     // ecrit directement dans le channel netty du joueur).
     public void sendFrame(byte[][] tiles) {
+        long start = System.nanoTime();
         byte[][] previous = lastFrame;
         lastFrame = tiles;
         viewers.removeIf(viewer -> !viewer.isOnline());
@@ -249,10 +272,16 @@ public final class VirtualScreen {
 
         // le diff se fait UNE fois pour toute la frame, pas une fois par viewer
         boolean[] changed = new boolean[count];
+        int changedTiles = 0;
         for (int i = 0; i < count; i++) {
             changed[i] = previous == null || i >= previous.length
                     || !Arrays.equals(tiles[i], previous[i]);
+            changedTiles += changed[i] ? 1 : 0;
         }
+        lastChangedTiles = changedTiles;
+        lastViewers = viewers.size();
+        lastSkippedViewers = 0;
+        lastDiffNanos = System.nanoTime() - start;
 
         for (Player viewer : viewers) {
             UUID id = viewer.getUniqueId();
@@ -261,6 +290,7 @@ public final class VirtualScreen {
                 // restent hors de sa dette, seules celles qui ont bouge s'y accumulent
                 or(missed.computeIfAbsent(id, k -> new boolean[count]), changed, count);
                 droppedFrames.incrementAndGet();
+                lastSkippedViewers++;
                 continue;
             }
             boolean[] debt = missed.remove(id);
@@ -322,6 +352,22 @@ public final class VirtualScreen {
         // Type de channel inconnu (autre plateforme, mock) : on suppose writable plutot que de
         // refuser silencieusement d'envoyer quoi que ce soit.
         return !(channel instanceof Channel netty) || netty.isWritable();
+    }
+
+    long getLastDiffNanos() {
+        return lastDiffNanos;
+    }
+
+    int getLastChangedTiles() {
+        return lastChangedTiles;
+    }
+
+    int getLastViewers() {
+        return lastViewers;
+    }
+
+    int getLastSkippedViewers() {
+        return lastSkippedViewers;
     }
 
     public int getDroppedFrames() {     // frames dropees parce qu'un viewer saturait
