@@ -18,7 +18,9 @@ import java.util.Locale;
 final class DoomCommand implements TabExecutor {
 
     private static final String CONTROLS = "Move: movement keys, sprint = run. Fire: jump or left click."
-            + " Use (doors, switches): sneak or right click. Weapons: hotbar slots 1-7. /doom leave to quit.";
+            + " Use (doors, switches): sneak or right click. Weapons: hotbar slots 1-7. /doom leave to quit."
+            // Le serveur ne voit pas ce reglage client : en OIT, text.fsh jette la balise -> doom_view rouge
+            + " Red screen? Turn off Improved Transparency (video settings, or F3+X).";
     private static final List<String> WORDS = List.of("on", "off", "coop", "arena", "join", "leave");
 
     private final DoomMc plugin;

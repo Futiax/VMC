@@ -206,7 +206,7 @@ final class DoomGames {
         if (!game.engine.isAlive()) {
             for (Seat s : game.seats.clone()) {
                 if (s != null) {
-                    s.player.sendMessage("[DOOMMC] The Doom engine stopped (see plugins/DOOMMC/engine/*/engine.log).");
+                    s.player.sendMessage("[DOOMMC] The Doom engine stopped (see plugins/MCDATA/engine/*/engine.log).");
                     leave(s.player);
                 }
             }

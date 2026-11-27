@@ -111,7 +111,7 @@ public final class VmcCommand implements CommandExecutor, TabCompleter {
 
         sender.sendMessage("§b=== [MinecraftVideo] Settings Info ===");
         sender.sendMessage("  §7C-Daemon      : §f" + (daemonOn ? "ON" + (daemonAlive ? " (running)" : " (idle)") : "OFF"));
-        sender.sendMessage("  §7Debug CSV     : §f" + (debugOn ? "ON (plugins/MinecraftVideo/debug/)" : "OFF"));
+        sender.sendMessage("  §7Debug CSV     : §f" + (debugOn ? "ON (" + plugin.getDataFolder().toPath().resolve("debug") + ")" : "OFF"));
         sender.sendMessage("  §7Render mode   : §f" + render.configName()
                 + (render == RenderMode.DATA ? " (wall: " + wall.configName() + " " + wall.width() + "x" + wall.height() + ")" : ""));
         sender.sendMessage("  §7Screen size   : §f" + effW + "x" + effH + " maps"
