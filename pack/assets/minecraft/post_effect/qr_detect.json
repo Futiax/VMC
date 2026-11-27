@@ -1,0 +1,105 @@
+{
+  "targets": {
+    "cand": {},
+    "tile": {
+      "width": 32,
+      "height": 32
+    },
+    "fit": {
+      "width": 4,
+      "height": 1
+    },
+    "out": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_seed",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "cand"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_tile",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "cand",
+          "bilinear": false
+        }
+      ],
+      "output": "tile"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_fit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "tile",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Cand",
+          "target": "cand",
+          "bilinear": false
+        }
+      ],
+      "output": "fit"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_qr_draw",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "cand",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Fit",
+          "target": "fit",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "out"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "out",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "BlitConfig": [
+          {
+            "name": "ColorModulate",
+            "type": "vec4",
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

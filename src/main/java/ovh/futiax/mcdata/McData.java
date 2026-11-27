@@ -9,6 +9,9 @@ import ovh.futiax.mcdata.poc.PocRegistry;
 import ovh.futiax.mcdata.poc.ProbePoc;
 import ovh.futiax.mcdata.poc.VideoPoc;
 
+import ovh.futiax.doommc.DoomMc;
+import ovh.futiax.minecraftvideo.MinecraftVideoPlugin;
+
 import java.util.List;
 
 // MCDATA : canal universel serveur -> client par map packets + post effects.
@@ -19,6 +22,11 @@ import java.util.List;
 //
 // Le resource pack (pack/) contient les shaders core modifies (text.vsh/fsh reconnaissent la
 // balise et la deplacent en coin bas-gauche) et un post-effect par POC.
+//
+// Il heberge aussi les deux anciens plugins, avec leurs commandes d'origine :
+//   VMC    (ovh.futiax.minecraftvideo) : /video (queue, skip, seek...), /vmc, /photo, /stream
+//   DOOMMC (ovh.futiax.doommc)         : /doom, /doomprobe
+// Un seul resource pack (pack/) pour tout le monde, pousse par le JoinListener de MCDATA.
 public final class McData extends JavaPlugin {
 
     private ResourcePackService resourcePack;
@@ -26,6 +34,8 @@ public final class McData extends JavaPlugin {
     private BeaconChannel channel;
     private PocRegistry pocRegistry;
     private NativeInstaller nativeInstaller;
+    private MinecraftVideoPlugin vmc;
+    private DoomMc doom;
 
     @Override
     public void onEnable() {
@@ -65,7 +75,13 @@ public final class McData extends JavaPlugin {
             cmd.setTabCompleter(handler);
         }
 
+        // En premier : le pack doit partir avant les /posteffect des modules (ordre des listeners)
         getServer().getPluginManager().registerEvents(new JoinListener(this), this);
+
+        vmc = new MinecraftVideoPlugin(this);
+        vmc.onEnable();
+        doom = new DoomMc(this);
+        doom.onEnable();
 
         getLogger().info("MCDATA enabled — " + pocRegistry.all().size() + " POC(s) registered: "
                 + pocRegistry.all().stream().map(p -> p.name()).toList());
@@ -73,6 +89,12 @@ public final class McData extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (doom != null) {
+            doom.onDisable();
+        }
+        if (vmc != null) {
+            vmc.onDisable();
+        }
         if (pocRegistry != null) {
             for (org.bukkit.entity.Player player : getServer().getOnlinePlayers()) {
                 pocRegistry.stopAll(player);

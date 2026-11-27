@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 // Version light de VirtualScreen de VMC : pas de control bar ni sous-titres, juste le mur.
 public final class VirtualScreen {
 
-    static final int FAKE_ID_BASE = 2_000_000_000;
+    static final int FAKE_ID_BASE = 2_050_000_000; // VMC part de 2_000_000_000, la balise de 2_100_000_000
     private static final AtomicInteger ENTITY_ID_COUNTER = new AtomicInteger(FAKE_ID_BASE);
     private static final AtomicInteger MAP_ID_COUNTER = new AtomicInteger(FAKE_ID_BASE);
     private static final byte FLAG_INVISIBLE = 0x20;

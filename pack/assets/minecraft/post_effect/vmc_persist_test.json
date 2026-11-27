@@ -1,0 +1,143 @@
+{
+  "targets": {
+    "counter1": {
+      "width": 1,
+      "height": 1,
+      "persistent": true
+    },
+    "counter2": {
+      "width": 1,
+      "height": 1,
+      "persistent": true
+    },
+    "half": {
+      "width": 2,
+      "height": 1,
+      "persistent": true
+    },
+    "tmp1": {
+      "width": 1,
+      "height": 1
+    },
+    "tmp2": {
+      "width": 1,
+      "height": 1
+    },
+    "out": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_inc",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "counter1",
+          "bilinear": false
+        }
+      ],
+      "output": "tmp1"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_copy",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "tmp1",
+          "bilinear": false
+        }
+      ],
+      "output": "counter1"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_inc",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "counter2",
+          "bilinear": false
+        }
+      ],
+      "output": "tmp2"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_copy",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "tmp2",
+          "bilinear": false
+        }
+      ],
+      "output": "counter2"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_half",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "tmp1",
+          "bilinear": false
+        }
+      ],
+      "output": "half"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/vmc_persist_show",
+      "inputs": [
+        {
+          "sampler_name": "Count1",
+          "target": "counter1",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Count2",
+          "target": "tmp2",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Half",
+          "target": "half",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "out"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "out",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "BlitConfig": [
+          {
+            "name": "ColorModulate",
+            "type": "vec4",
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

@@ -32,3 +32,217 @@ palette-path: ""
 
 # Default FPS for video playback.
 video-fps: 20
+
+# ====================== VMC (/video /vmc /photo /stream) ======================
+# mcmm-path, palette-path et le resource pack sont ceux de MCDATA ci-dessus.
+
+# Client post-effect pushed to every viewer while a screen is displayed
+# (/posteffect add|remove, Minecraft 26.3+ servers only; ignored with a warning
+# on older servers). Meant for the VMC resource pack: set it to
+# "minecraft:custom_palette" together with a palette-path pointing at the SAME
+# custom palette the pack was generated from -- mcmm quantizes on it, the
+# pack displays it. Players without the pack see vanilla map colours instead.
+# In render-mode data, the data wall's decoder (minecraft:vmc_data or minecraft:vmc_data_lan) is
+# pushed INSTEAD of this one (see below).
+# Empty = off.
+post-effect: ""
+
+# Default screen size in maps (each map is 128x128 pixels) and default fps,
+# used when /video play is called without explicit [w] [h] [fps] arguments.
+# Change in-game with /vmc size <w> <h> and /vmc fps <n>.
+default-width: 4
+default-height: 3
+default-fps: 10
+
+# How the picture is turned into map colours (/vmc render ...):
+#   normal  ffmpeg scales the picture to the screen, nearest palette colour.
+#   dither  same + Floyd-Steinberg dithering (mcmm --dither). The map palette has
+#           ~250 colours, so flat gradients (skies, fades) band visibly; dithering
+#           trades that banding for fine noise and lands much closer to the source.
+#           COST: the noise changes every frame, so "only resend the tiles that
+#           changed" stops helping and bandwidth goes back to a full frame every
+#           time. If /video status reports dropped frames, go back to normal.
+#   strict  no invented colour (mcmm --strict): the picture is scaled by a WHOLE
+#           factor with nearest neighbour (every pixel becomes a k x k block, or
+#           one pixel in k is kept when it is too big) and centred on black. For
+#           pixel art and QR codes: 'normal' greys every edge as soon as the size
+#           does not match. Fills the screen only when the size divides exactly.
+#           Pictures larger than 8192 px on a side are refused in this mode.
+#   data    EXPERIMENTAL (mcmm --data): no longer a picture on the maps. The picture
+#           is DCT-compressed into a wall of colour symbols that only players
+#           with the VMC resource pack can decode (post effect minecraft:vmc_data,
+#           client 26.3+); they see the picture drawn in a canvas at the centre of
+#           their screen. Players without the pack just see noise.
+#           The screen is ALWAYS the data-wall size below, whatever size is asked, and
+#           has no control bar (it would hide part of the wall). The wall's decoder
+#           post effect is pushed to every viewer instead of post-effect (with
+#           /posteffect, 26.3+ servers; on an older server players must apply it
+#           themselves).
+#           To decode: stand facing the wall, centred, with the WHOLE wall on screen,
+#           in daylight or at full brightness so the map colours stay exact. Too far
+#           and the symbols get smaller than ~2 screen pixels: the wall is not read.
+# An older config with "dither: true" and no render-mode keeps dithering.
+# Applies to the next /video play, /photo or /stream.
+render-mode: normal
+
+# The wall used by render-mode data (/vmc data <wan|lan>):
+#   wan  4x2 maps, an 848x464 picture, up to ~9 Mbit/s per viewer at 10 fps (18 at 20).
+#        Readable (FOV 70) from about 1.4 to 3.2 blocks at 1080p.
+#   lan  5x3 maps, a 1232x720 picture: more data, a better image, but up to ~19 Mbit/s per
+#        viewer at 10 fps (38 at 20) and twice the encoding work for the server. The whole
+#        wall must still fit on screen with readable symbols: at 1080p only from about
+#        2.1 to 3.1 blocks away (FOV 70). Players decode it with minecraft:vmc_data_lan
+#        (same VMC resource pack).
+data-wall: wan
+
+# Clickable control bar floating under the screen (packet-only entities, like
+# the screen itself): rewind 10s / play-pause / forward 10s / skip to the next
+# queued video. Only players with the minecraftvideo.use permission can click
+# the buttons; everyone sees them. Applies to the next /video play.
+control-bar-enabled: true
+
+# How far a player can be from the screen and still be sent the video, in blocks. A screen
+# costs its full bandwidth PER viewer (a 5x3 screen at 20 fps is roughly 30 Mbit/s each), so
+# streaming to someone mining 5000 blocks away — or standing in another world — is pure waste.
+# Players walking in or out of range are picked up within a second, and someone coming back
+# gets a complete frame, never a half-updated one.
+# Set to 0 to send to every player in the screen's world, whatever the distance.
+viewer-range-blocks: 64
+
+# --- Subtitle overlay geometry (also settable in-game: /vmc sub ...) ---
+#   size   = text scale (bigger = larger glyphs)
+#   height = blocks above the screen's bottom edge (raises the text; negative
+#            lowers it below the edge; a control bar, if present, adds its own
+#            clearance above this automatically)
+#   depth  = blocks in front of the screen surface (0 = on the plane; a small
+#            value avoids z-fighting; negative places it behind the plane)
+# Applies to the next /video play.
+subtitle-size: 1.0
+subtitle-height: 0.45
+subtitle-depth: 0.05
+
+# --- Remote source cache ---
+# Download an http(s) source to a local file (plugins/MCDATA/cache)
+# ONCE, so mcmm, the audio ffmpeg, ffprobe and the subtitle ffmpeg all read the
+# local file instead of each opening its own connection to the origin. This
+# avoids the concurrent-connection load that makes hosts like archive.org answer
+# "5XX Server Error", and means a seek or a subtitle toggle never re-fetches.
+# The file is kept while the URL is still queued or playing and removed once its
+# last occurrence ends; the whole cache is wiped on server stop. Local file
+# paths are always played directly (never cached).
+cache-remote-sources: true
+
+# Hard size cap: a remote source larger than this is REFUSED (a clear message,
+# not a silent stream). In megabytes.
+# For safety the download refuses non-public targets (loopback, link-local incl.
+# cloud metadata, private/CGNAT/ULA ranges), re-validated across redirects.
+cache-max-size-mb: 2048
+
+# --- YouTube (and 1000+ other sites) support, via yt-dlp ---
+# When enabled, an http(s) source that is NOT a direct media file (a YouTube
+# watch page, etc.) is DOWNLOADED by yt-dlp itself (a low-res <=480p stream,
+# exactly right for 128px map screens; video and audio are merged with the
+# ffmpeg configured below). yt-dlp must do the fetching: the signed CDN urls it
+# resolves only answer to the exact request it negotiated. Requires the
+# remote-source cache above to be on (default). Direct media URLs and local
+# paths ignore yt-dlp entirely.
+#
+# yt-dlp is NOT bundled (it is ~30 MB per platform and its extractors break
+# often). Instead the plugin finds it in this order and, only if needed,
+# downloads it ONCE from yt-dlp's official GitHub releases into
+# plugins/MCDATA/bin (then self-updates it in the background):
+#   1. yt-dlp-path below, if set;
+#   2. a yt-dlp already on the server's PATH (preferred: the admin maintains it);
+#   3. a copy this plugin downloads on the first YouTube-style play.
+youtube-support: true
+
+# Explicit path to a yt-dlp executable. Leave EMPTY to auto-detect / auto-download
+# as described above. Set it to use a specific build (or a PATH name like "yt-dlp").
+yt-dlp-path: ""
+
+# --- Live streams (/stream) ---
+# A live source cannot be played directly: the video converter and the audio ffmpeg open two
+# INDEPENDENT connections, and on a live stream they join at different segments — a permanent
+# audio/video offset of random size. So a live stream is RECORDED into slices of finished local
+# files, which then play back exactly like ordinary videos, perfectly in sync.
+#
+# The slice length is the whole trade-off, both ways at once:
+#   longer  = further behind the live edge (at least one slice), but fewer seams
+#   shorter = closer to live, but every slice change costs a screen restart (about a second of
+#             frozen picture), so short slices stutter constantly
+# 30 is a sane starting point. Below ~15 the stutter dominates.
+stream-segment-seconds: 30
+
+# How many slices may wait in line before the oldest are dropped. A live stream waits for
+# nobody: if the server cannot render in real time the backlog grows forever and you end up
+# watching the past. Dropping re-syncs to the live edge, like any streaming player does.
+stream-max-backlog: 3
+
+# --- Audio (requires the Simple Voice Chat mod on the server and clients) ---
+# When enabled, the video's audio is streamed into a spatialised Simple Voice
+# Chat channel anchored at the screen. If SVC is absent, videos play silently.
+audio-enabled: true
+
+# Audio channel layout:
+#   mono     — one channel at the screen center.
+#   stereo   — two channels anchored to the screen's left/right edges, so the
+#              client pans L/R from the viewer's own position (a fixed "cinema"
+#              image). Costs ~2x audio bandwidth.
+#   surround — 5.1 decode mapped onto 6 speakers: front L/R at the screen
+#              edges, center at the screen center, a SUBWOOFER (the LFE
+#              channel, +6 dB) at the base of the screen, rear L/R behind the
+#              audience. A 5.1+ source (or Atmos bed) maps directly; a
+#              mono/stereo source gets a REAL upmix (center/rears/LFE are
+#              synthesized), so every speaker plays. Costs ~6x audio bandwidth.
+# Change in-game with /vmc audio <mono|stereo|surround>.
+audio-mode: "mono"
+
+# How many blocks behind the screen plane (toward the audience) the surround
+# rear speakers sit. Only used with audio-mode: surround.
+surround-rear-distance: 10
+
+# --- A/V sync ---
+# The first video frame is sent immediately and FROZEN for
+# audio-start-delay-ms: the client absorbs the render spike of the screen
+# appearing while the picture is static, so its audio jitter buffer never
+# inflates. Then video pacing and audio start together; no content is lost to
+# the warm-up.
+#
+# av-sync-delay-ms estimates the client-side audio buffering; that much audio
+# content is SKIPPED so the sound lands on the picture:
+#   sound arrives LATE (after the picture)  -> INCREASE it
+#   sound arrives EARLY (before the picture) -> DECREASE it (or set 0)
+# Change in-game with /vmc avsync <ms>.
+av-sync-delay-ms: 200
+audio-start-delay-ms: 1000
+
+# Path to the ffmpeg executable used to decode the audio track (must be in PATH
+# or an absolute path). ffmpeg reads local files and URLs alike.
+ffmpeg-path: "ffmpeg"
+
+# Download a portable, statically-linked ffmpeg (ffmpeg AND ffprobe) when none is
+# found, so the server needs nothing preinstalled. Resolution order at startup:
+#   1. ffmpeg-path above;
+#   2. an ffmpeg+ffprobe pair already on the server's PATH (preferred: the admin
+#      maintains it);
+#   3. a copy this plugin downloads ONCE from the official FFmpeg-Builds GitHub
+#      releases into plugins/MCDATA/bin.
+#
+# The download is ~130 MB (plus roughly as much again, briefly, while unpacking)
+# and runs in the BACKGROUND at startup: the server boots immediately, and a
+# /video play issued during that window behaves as it would without ffmpeg. The
+# LGPL build is used (nothing here encodes with x264/x265). Unpacking a Linux
+# build needs `tar` with xz support; Windows builds need nothing extra. No macOS
+# build is published upstream, so install ffmpeg yourself there.
+#
+# Set to false to keep the old behaviour: ffmpeg must be installed by the admin.
+ffmpeg-autodownload: true
+
+# Audio falloff distance in blocks (how far the screen's sound carries).
+audio-distance: 48
+
+# ============================== DOOMMC (/doom) ==============================
+
+# Freedoom WAD for /doom (Debian/Ubuntu package "freedoom"). It must be the same WAD the resource
+# pack was generated from (tools/doom/gen_level.py): the pack holds its level and sprites.
+wad: /usr/share/games/doom/freedoom1.wad

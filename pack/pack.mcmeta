@@ -1,6 +1,13 @@
 {
   "pack": {
-    "pack_format": 71,
-    "description": "MCDATA — universal map-data channel shaders (core text + post effects)"
+    "min_format": [
+      97,
+      1
+    ],
+    "max_format": [
+      98,
+      0
+    ],
+    "description": "MCDATA (26.3) — canal map-data + VMC + DOOMMC"
   }
 }

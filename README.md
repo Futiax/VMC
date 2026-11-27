@@ -28,10 +28,24 @@ server ──map packets──▶ client ──core shader (text.vsh/fsh)──�
 3. **Post-effect** — pushed per-player via vanilla `/posteffect` (26.3+). The shader reads the
    beacon pixels at fixed positions and renders whatever the POC wants.
 
+## Hosted plugins (original commands kept)
+
+MCDATA also hosts the former standalone plugins, with their own commands and permissions:
+
+| Module | Commands | Permission |
+|--------|----------|------------|
+| VMC (`ovh.futiax.minecraftvideo`) | `/video play\|queue\|skip\|seek\|subs\|stop\|pause\|resume\|status`, `/vmc`, `/photo`, `/stream` | `minecraftvideo.use` |
+| DOOMMC (`ovh.futiax.doommc`) | `/doom [on\|off\|coop\|arena\|join\|leave]`, `/doomprobe` | `doommc.use` |
+
+Everything shares one config (`plugins/MCDATA/config.yml`) and **one resource pack** (`pack/`:
+MCDATA core shaders + VMC post effects + DOOMMC post effects and textures).
+
 ## Requirements
 
 - **Server**: Paper 26.3 (or compatible) & Java 21
 - [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin (>= 2.11.2)
+- Optional: [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat) for video audio
+- `/doom`: the Freedoom WAD the pack was generated from (`wad:` in config.yml, package `freedoom`)
 - Players must accept the resource pack (self-hosted by default on `resource-pack-port`)
 
 ## Commands
@@ -58,6 +72,9 @@ JSON + fragment shader in `pack/`. The beacon channel is already running — jus
 ```bash
 ./build.sh        # bump version, build pack.zip, compile with Maven
 make server       # copy the jar into server/plugins/
+make engine       # rebuild the Doom engine (native/) into the jar
+make level        # regenerate E1M1 pack data from the Freedoom WAD
+make natives      # rebuild mcmm from src/main/resources/natives/mcmm.c
 ```
 
 Licensed under the GPL v3.

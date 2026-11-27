@@ -1,0 +1,41 @@
+package ovh.futiax.minecraftvideo;
+
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+
+// Un joueur qui arrive en cours de lecture devient viewer de l'ecran actif : il recoit les
+// spawns de frames, les metadata d'item et la derniere image envoyee. Le post-effect suit :
+// remis a zero au join (au cas ou il aurait survecu a une coupure), retire au quit pendant
+// que la commande peut encore viser le joueur.
+public final class JoinListener implements Listener {
+
+    private final MinecraftVideoPlugin plugin;
+
+    public JoinListener(MinecraftVideoPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        // Le pack est pousse par le JoinListener de MCDATA, enregistre avant celui-ci.
+        plugin.getPostEffects().reset(event.getPlayer());
+        if (plugin.isDaemonMode() && plugin.getDaemon() != null) {
+            plugin.getDaemon().onPlayerJoin(event.getPlayer());
+            return;
+        }
+        PlaybackSession session = plugin.getActiveSession();
+        if (session != null) {
+            session.addViewer(event.getPlayer());
+        }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        if (plugin.getDaemon() != null) {
+            plugin.getDaemon().onPlayerQuit(event.getPlayer());
+        }
+        plugin.getPostEffects().clear(event.getPlayer());
+    }
+}
