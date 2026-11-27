@@ -8,7 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PACK_RES=src/main/resources/pack.zip
-rm -f "$PACK_RES"
+# Empreinte du CONTENU (noms + octets, pas le zip) : la CI publie le pack en release pack-<id>
+PACK_ID=src/main/resources/pack.id
+rm -f "$PACK_RES" "$PACK_ID"
 
 if [ ! -d pack ] || [ -z "$(find pack -type f ! -name 'README*' -print -quit)" ]; then
     echo "pack: aucun contenu dans pack/, le jar partira sans resource pack"
@@ -23,5 +25,6 @@ trap 'rm -rf "$staged"' EXIT
 ( cd pack && find . -type f ! -name 'README*' -exec cp --parents {} "$staged/" \; )
 find "$staged" -exec touch -t 198001010000 {} +
 ( cd "$staged" && find . -type f | LC_ALL=C sort | zip -q -X -9 "$OLDPWD/$PACK_RES" -@ )
+( cd "$staged" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12 ) > "$PACK_ID"
 
-echo "pack: $PACK_RES ($(find "$staged" -type f | wc -l) fichiers, sha1 $(sha1sum "$PACK_RES" | cut -d' ' -f1))"
+echo "pack: $PACK_RES ($(find "$staged" -type f | wc -l) fichiers, sha1 $(sha1sum "$PACK_RES" | cut -d' ' -f1)), release pack-$(cat "$PACK_ID")"

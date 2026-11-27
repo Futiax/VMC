@@ -30,13 +30,32 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Doit tourner AVANT mvn : pack.zip n'est pas commite (artefact derive de pack/), donc sans
+      # Doit tourner AVANT mvn : pack.zip et pack.id ne sont pas commites (artefacts derives de pack/), donc sans
       # cette etape le jar partirait sans resource pack. Meme script que ./build.sh.
       - name: Build the resource pack
         run: ./make-pack.sh
 
       - name: Build with Maven
         run: mvn -B clean package
+
+      # Le pack complet (MCDATA + VMC + DOOMMC) a ses propres releases, une par contenu (pack.id,
+      # ecrit par make-pack.sh) : .../releases/download/pack-<id>/pack.zip. Publie a chaque push si
+      # besoin, meme sans bump de version, et jamais marque "Latest" : c'est le plugin.
+      - name: Publish the resource pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f src/main/resources/pack.id ] || { echo "No resource pack in pack/."; exit 0; }
+          id=$(cat src/main/resources/pack.id)
+          if gh release view "pack-$id" >/dev/null 2>&1; then
+            echo "Release pack-$id already exists."
+          else
+            gh release create "pack-$id" src/main/resources/pack.zip \
+              --target "$GITHUB_SHA" \
+              --title "Resource pack $id" \
+              --notes "MCDATA resource pack (MCDATA + VMC + DOOMMC, Minecraft 26.3). Pushed to players by the plugin." \
+              --latest=false
+          fi
 
       - name: Read the project version from pom.xml
         id: version
