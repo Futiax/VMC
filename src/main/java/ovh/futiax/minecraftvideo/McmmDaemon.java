@@ -84,6 +84,7 @@ public final class McmmDaemon {
     private volatile int activeH = 3;
     private volatile int activeFps = 10;
     private volatile long lastSendNanos;
+    private volatile long lastBundleFinishNanos;
 
     // Table de correspondance Slot (0..63) <-> Joueur
     private final UUID[] slotToUuid = new UUID[MAX_PLAYERS];
@@ -110,12 +111,7 @@ public final class McmmDaemon {
         }
 
         try {
-            ProcessBuilder pb = new ProcessBuilder(mcmmPath, "--daemon", "--palette", palettePath);
-            // Evite que les 3 threads secondaires de libgomp fassent du busy-wait (spin) pendant
-            // 30 ms entre deux frames quand le thread principal dort dans poll() : 1000 iterations
-            // (~quelques us) suffisent a enchainer les 4 boucles OpenMP d'une meme frame.
-            pb.environment().putIfAbsent("GOMP_SPINCOUNT", "1000");
-            process = pb.start();
+            process = new ProcessBuilder(mcmmPath, "--daemon", "--palette", palettePath).start();
         } catch (IOException e) {
             plugin.getLogger().warning("[C-Daemon] Echec du lancement de mcmm --daemon : " + e.getMessage());
             process = null;
@@ -134,9 +130,9 @@ public final class McmmDaemon {
             onPlayerJoin(player);
         }
 
-        // Envoie la position et l'etat writable des joueurs a chaque tick (20x/s)
+        // Envoie la position des joueurs toutes les 5 ticks (4x/s)
         stateTask = plugin.getServer().getScheduler()
-                .runTaskTimer(plugin, this::sendStatesTick, 1L, 1L);
+                .runTaskTimer(plugin.host(), this::sendStatesTick, 5L, 5L);
 
         plugin.getLogger().info("[C-Daemon] Processus mcmm --daemon demarre (PID " + process.pid() + ").");
         return true;
@@ -246,7 +242,7 @@ public final class McmmDaemon {
                 final float fYaw = yaw;
                 final String[] copyArgs = args.clone();
                 plugin.getMediaCache().reference(rawSource);
-                plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                plugin.getServer().getScheduler().runTaskAsynchronously(plugin.host(), () -> {
                     try {
                         String localPath = plugin.getMediaCache().acquire(rawSource, () -> !isRunning());
                         copyArgs[1] = "\"" + localPath + "\"";
@@ -313,9 +309,11 @@ public final class McmmDaemon {
                 if (slot < 0) continue;
                 Location loc = p.getLocation();
                 int worldHash = loc.getWorld() != null ? loc.getWorld().getUID().hashCode() : 0;
+                // Le test isWritable se fait uniquement dans OP_TILES_BUNDLE juste AVANT d'ecrire
+                // une frame (comme VirtualScreen), jamais en plein milieu d'un flush sur un timer.
                 eOut.writeByte(slot);
                 eOut.writeInt(worldHash);
-                eOut.writeByte(isWritable(p) ? 1 : 0);
+                eOut.writeByte(1);
                 eOut.writeDouble(loc.getX());
                 eOut.writeDouble(loc.getY());
                 eOut.writeDouble(loc.getZ());
@@ -460,15 +458,22 @@ public final class McmmDaemon {
                     if ((viewerMask & (1L << s)) == 0) continue;
                     Player viewer = playerAtSlot(s);
                     if (viewer == null || !viewer.isOnline()) continue;
+                    // On teste isWritable AVANT d'ecrire la frame (50 ms apres la frame precedente,
+                    // exactement comme VirtualScreen), jamais juste apres avoir mis 160 Ko dans le
+                    // buffer Netty (dont le high-water mark par defaut est de 64 Ko).
+                    if (!isWritable(viewer)) {
+                        sendPacket(EVT_WRITABLE, new byte[] { (byte) s, 0 });
+                        continue;
+                    }
                     players.writePacket(viewer, new WrapperPlayServerBundle());
                     for (WrapperPlayServerMapData pkt : packets) {
                         players.writePacket(viewer, pkt);
                     }
                     players.sendPacket(viewer, new WrapperPlayServerBundle());
-                    // Mise a jour immediate de writable vers le C apres le flush du bundle
-                    sendPacket(EVT_WRITABLE, new byte[] { (byte) s, (byte) (isWritable(viewer) ? 1 : 0) });
                 }
-                lastSendNanos += System.nanoTime() - sendStart;
+                long endNanos = System.nanoTime();
+                lastBundleFinishNanos = endNanos;
+                lastSendNanos += endNanos - sendStart;
             }
             case OP_SESSION_START -> {
                 closeTimings();

@@ -360,13 +360,13 @@ public final class VideoCommand implements CommandExecutor, TabCompleter {
     private <T> void runAsyncThenSync(PlaybackSession session,
                                       java.util.function.Supplier<T> work,
                                       java.util.function.Consumer<T> then) {
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin.host(), () -> {
             T result = work.get();
             if (!plugin.isEnabled()) {
                 return; // plugin desactive pendant le sondage, rien a livrer
             }
             try {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                plugin.getServer().getScheduler().runTask(plugin.host(), () -> {
                     if (plugin.getActiveSession() == session && !session.isStopped()) {
                         then.accept(result);
                     }

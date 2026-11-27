@@ -1,14 +1,18 @@
-name: MinecraftVideo
-main: ovh.futiax.minecraftvideo.MinecraftVideoPlugin
+name: MCDATA
+main: ovh.futiax.mcdata.McData
 # Filled from pom.xml at build time (Maven resource filtering); bump via ./build.sh
 version: ${project.version}
 api-version: "1.21"
-description: Plays videos on virtual in-game map screens (packets only).
+description: Universal map-data channel — server pushes data through map packets, resource-pack shaders read it back. Hosts all POCs.
 author: Futiax
 depend: [packetevents]
 softdepend: [voicechat]
 
 commands:
+  mcdata:
+    description: Universal data channel. List POCs, start/stop them on players.
+    usage: /mcdata list | /mcdata <poc> [on|off] [player] | /mcdata stop [player]
+    permission: mcdata.use
   video:
     description: Play a video on a virtual map screen.
     usage: /video play <url-or-path> [w] [h] [fps] | /video queue [add <src>|list|remove <n>|clear] | /video skip | /video seek <+s|-s|[hh:]mm:ss> | /video subs <list|off|n> | /video stop | pause | resume | status
@@ -25,8 +29,22 @@ commands:
     description: Play a live stream (Twitch, YouTube live, HLS) on a virtual map screen.
     usage: /stream <url> | /stream delay <seconds> | /stream stop | /stream status
     permission: minecraftvideo.use
+  doomprobe:
+    description: Test of the server-to-shader channel (counter and camera angle).
+    usage: /doomprobe [on|off] [player]
+    permission: doommc.use
+  doom:
+    description: Play Doom E1M1 (Freedoom), solo, coop or arena (deathmatch), drawn by the resource pack shaders.
+    usage: /doom [on|off] [player] | /doom coop|arena [players...] | /doom join <host> [player] | /doom leave [player]
+    permission: doommc.use
 
 permissions:
+  mcdata.use:
+    description: Use the MCDATA commands.
+    default: op
   minecraftvideo.use:
     description: Allows using the /video, /photo, /stream and /vmc commands.
+    default: op
+  doommc.use:
+    description: Use the DOOMMC commands.
     default: op

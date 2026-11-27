@@ -19,9 +19,7 @@ public final class JoinListener implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
-        // Le pack d'abord : les post effects qu'il definit doivent exister cote client avant
-        // qu'on pousse un /posteffect qui s'y refere.
-        plugin.getResourcePack().send(event.getPlayer());
+        // Le pack est pousse par le JoinListener de MCDATA, enregistre avant celui-ci.
         plugin.getPostEffects().reset(event.getPlayer());
         if (plugin.isDaemonMode() && plugin.getDaemon() != null) {
             plugin.getDaemon().onPlayerJoin(event.getPlayer());

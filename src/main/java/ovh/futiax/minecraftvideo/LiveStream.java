@@ -98,7 +98,7 @@ public final class LiveStream {
         ffmpeg = new ProcessBuilder(cmd).start();
         drainStderr();
         watcher = plugin.getServer().getScheduler()
-                .runTaskTimer(plugin, this::poll, WATCH_TICKS, WATCH_TICKS);
+                .runTaskTimer(plugin.host(), this::poll, WATCH_TICKS, WATCH_TICKS);
     }
 
     // Main thread, une fois par seconde. Le dossier contient une poignee de fichiers, donc le

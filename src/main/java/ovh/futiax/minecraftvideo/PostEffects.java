@@ -160,7 +160,7 @@ public final class PostEffects {
             return;
         }
         try {
-            plugin.getServer().getScheduler().runTask(plugin, task);
+            plugin.getServer().getScheduler().runTask(plugin.host(), task);
         } catch (IllegalStateException | IllegalPluginAccessException e) {
             // plugin en cours de desactivation : clearAll() sur le main thread prend le relais
         }
