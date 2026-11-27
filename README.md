@@ -46,7 +46,7 @@ MCDATA core shaders + VMC post effects + DOOMMC post effects and textures).
 - [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin (>= 2.11.2)
 - Optional: [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat) for video audio
 - `/doom`: the Freedoom WAD the pack was generated from (`wad:` in config.yml, package `freedoom`)
-- Players must accept the resource pack (self-hosted by default on `resource-pack-port`)
+- Players must accept the resource pack (downloaded from its GitHub release `pack-<id>` by default, or self-hosted with `resource-pack-selfhost: true`)
 
 ## Commands
 

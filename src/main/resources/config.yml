@@ -5,13 +5,18 @@
 # and the client fetches the zip over HTTP.
 resource-pack: true
 
-# Serve the pack from a tiny HTTP server inside the plugin (default). resource-pack-port must
-# be reachable BY PLAYERS, and it is NOT the game port: a closed port ends in "Connection
-# refused" on the client and nobody gets the pack.
-resource-pack-selfhost: true
+# By default players download the pack from its GitHub release (pack-<id>, published by the CI,
+# <id> = the pack's content): nothing to host, nothing to open. The URL is derived from the pack
+# this jar was built with, so an upgrade follows along on its own -- that is why it is not
+# written here (your config.yml is never overwritten).
+#
+# resource-pack-selfhost: true serves the pack from a tiny HTTP server inside the plugin
+# instead, for players without internet access. resource-pack-port must then be reachable BY
+# PLAYERS, and it is NOT the game port: a closed port ends in "Connection refused".
+resource-pack-selfhost: false
 resource-pack-port: 8098
 
-# With resource-pack-selfhost: false, the URL of a pack.zip hosted elsewhere.
+# Explicit URL of a pack.zip hosted elsewhere. Empty = the GitHub release above.
 resource-pack-url: ""
 
 # Kick players who decline the pack. Leave off until players actually receive it.
