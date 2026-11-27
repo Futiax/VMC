@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>ovh.futiax</groupId>
-    <artifactId>minecraftvideo-plugin</artifactId>
-    <version>1.0.10</version>
+    <artifactId>mcdata</artifactId>
+    <version>0.1.0</version>
     <packaging>jar</packaging>
 
-    <name>MinecraftVideo</name>
-    <description>Plays videos on virtual in-game map screens (packets only, nothing touches the world).</description>
+    <name>MCDATA</name>
+    <description>Universal map-data channel: server pushes arbitrary data through map packets, resource-pack shaders read it back. Hosts all POCs (probe, video, doom, ...).</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
@@ -25,10 +25,6 @@
         <repository>
             <id>codemc-releases</id>
             <url>https://repo.codemc.io/repository/maven-releases/</url>
-        </repository>
-        <repository>
-            <id>maxhenkel</id>
-            <url>https://maven.maxhenkel.de/repository/public</url>
         </repository>
     </repositories>
 
@@ -48,26 +44,18 @@
             <version>2.13.0</version>
             <scope>provided</scope>
         </dependency>
-        <!-- Simple Voice Chat API: provided by the SVC mod/plugin at runtime,
-             so it is NOT shaded. Server must run Simple Voice Chat >= 2.6.0. -->
-        <dependency>
-            <groupId>de.maxhenkel.voicechat</groupId>
-            <artifactId>voicechat-api</artifactId>
-            <version>2.6.0</version>
-            <scope>provided</scope>
-        </dependency>
     </dependencies>
 
     <build>
         <finalName>${project.artifactId}-${project.version}</finalName>
         <!-- All dependencies are provided at runtime (Paper, the packetevents
-             plugin, the Simple Voice Chat mod), so nothing is shaded: a plain
-             jar of our own classes + resources is produced. -->
+             plugin), so nothing is shaded: a plain jar of our own classes +
+             resources is produced. -->
 
         <!-- plugin.yml is filtered so its `version:` comes from this pom
              (single source of truth; ./build.sh bumps it on every build).
-             Everything else is copied verbatim: filtering would corrupt the
-             bundled native mcmm binaries. -->
+             Everything else is copied verbatim: filtering would corrupt
+             binary resources such as pack.zip. -->
         <resources>
             <resource>
                 <directory>src/main/resources</directory>

@@ -1,72 +1,63 @@
-# MinecraftVideo (VMC)
+# MCDATA
 
-Plays videos on virtual in-game map screens on a Paper 1.21.8 server with synchronized, spatialized audio.
+Universal map-data channel for Minecraft (Paper 26.3+): the server pushes arbitrary data to
+clients through **map packets only** — nothing is written to the world — and the resource pack's
+**shaders read it back** from a fixed corner of the screen.
 
-The plugin spawns the native converter (`mcmm`) as a subprocess and forwards its decoded frames to players as map packets. **Everything is virtual**: fake entity IDs, fake map IDs, packets only — nothing is written to the world or to disk.
+This plugin is the shared infrastructure. On top of it, **POCs** plug in their own payload and
+post-effect:
 
-[`mcmm`](https://github.com/Futiax/MinecraftVideo) is my own C converter (decoding, scaling and quantization to the vanilla map palette) — it is the actual engine of the project; this repository is the Minecraft side: packets, screen geometry, audio channels, commands.
+| POC | Command | What it does |
+|-----|---------|--------------|
+| `probe` | `/mcdata probe on` | Channel test: counter + camera angles displayed bottom-left |
+| `video` | `/mcdata video play <url> [normal\|data] [wan\|lan]` | Virtual screen. **data mode** places 3 light cushions in front of the screen at the right distance so players know where to stand |
 
-The project started in 2023 as a Python script baking videos into map `.dat` files and a datapack ([McMovieMaker](https://github.com/Futiax/McMovieMaker)), was rewritten in Cython for speed, then in C as [`mcmm`](https://github.com/Futiax/MinecraftVideo), and finally moved off datapacks to live packets — which is this plugin.
+## How it works
 
-Play from **local files**, **direct URLs**, or **YouTube** (and 1000+ other sites): a page URL is resolved to a playable stream with `yt-dlp`, which the plugin auto-downloads on first use if it isn't already installed — no manual setup.
+```
+server ──map packets──▶ client ──core shader (text.vsh/fsh)──▶ beacon in bottom-left corner
+                                                            ──post-effect shader──▶ reads pixels
+```
 
----
+1. **Beacon** — 4 invisible glow item frames around the player's eyes, each holding the same
+   128×128 map. The core shader `text.vsh` recognizes the beacon by its 4-texel signature and
+   moves it to the bottom-left of the screen; `text.fsh` copies it pixel-perfect + the
+   `ModelViewMat` (camera rotation).
+2. **Encoding** — each texel carries one nibble (4 bits) from 16 fixed vanilla map colors.
+   Layout: texels 0-3 = signature, 4-27 = header (counter, yaw, pitch), 28+ = payload.
+3. **Post-effect** — pushed per-player via vanilla `/posteffect` (26.3+). The shader reads the
+   beacon pixels at fixed positions and renders whatever the POC wants.
 
 ## Requirements
 
-- **Server**: Paper 1.21.8 (or compatible) & Java 21
-- **Dependencies**: 
-  - [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin (Required, >= 2.11.2)
-  - **ffmpeg & ffprobe** installed on the server and added to your system `PATH` (Required for audio & subtitles)
-  - [**Simple Voice Chat**](https://modrinth.com/plugin/simple-voice-chat) mod/plugin (Optional, required for audio; must be installed on both the server and clients, >= 2.6.0)
-  - **yt-dlp** (Optional, for YouTube-style URLs; auto-downloaded on first use if not already on the server's `PATH`. Requires the remote-source cache to stay enabled — the default.)
+- **Server**: Paper 26.3 (or compatible) & Java 21
+- [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin (>= 2.11.2)
+- Players must accept the resource pack (self-hosted by default on `resource-pack-port`)
 
-*Note: The native `mcmm` binary and vanilla color palette are bundled inside the jar and extracted automatically on first start. Only a statically-linked `linux-x64` binary is bundled by default.*
+## Commands
 
----
+```
+/mcdata list                                              — list registered POCs
+/mcdata <poc> on|off [player]                             — start/stop a POC
+/mcdata video play <url> [normal|data] [wan|lan] [player] — play a video (decoded live by mcmm)
+/mcdata video stop [player]                               — stop the video
+/mcdata stop [player]                                     — stop all POCs for a player
+```
 
-## Installation & Setup
+The `video` POC spawns the native `mcmm` binary (bundled in the jar, auto-extracted) as a
+subprocess, reads its stream frames and pushes them to the virtual screen. In `data` mode it
+also places **3 light cushions** in front of the screen at the optimal reading distance.
 
-1. Install the [**PacketEvents**](https://modrinth.com/plugin/packetevents) plugin in your server's `plugins/` folder.
-2. (Optional for audio) Install the [**Simple Voice Chat**](https://modrinth.com/plugin/simple-voice-chat) plugin.
-3. Download and place the `minecraftvideo-plugin` jar in the `plugins/` directory.
-4. Start your server. On the first start, the plugin will extract `mcmm` and the color palette into `plugins/MinecraftVideo/` and generate a `config.yml`.
-5. Ensure `ffmpeg` and `ffprobe` are available in your system `PATH`.
+## Adding a POC
 
----
+Implement `ovh.futiax.mcdata.poc.Poc`, register it in `McData.onEnable()`, and add a post-effect
+JSON + fragment shader in `pack/`. The beacon channel is already running — just feed it payload.
 
-## Quick Start
+## Build
 
-Requires the `minecraftvideo.use` permission (default: OP).
+```bash
+./build.sh        # bump version, build pack.zip, compile with Maven
+make server       # copy the jar into server/plugins/
+```
 
-- **Start Playback**:
-  ```
-  /video play <url-or-path>
-  ```
-  *Spawns a virtual screen in front of you and plays the video (a local path, a direct URL, or a YouTube link — page URLs are resolved with yt-dlp, which the plugin auto-downloads on first use if it isn't already on the server's PATH).*
-- **Pause / Resume**:
-  ```
-  /video pause
-  /video resume
-  ```
-- **Stop Playback**:
-  ```
-  /video stop
-  ```
-- **Performance Status**:
-  ```
-  /video status
-  ```
-
----
-
-## Full Documentation & Wiki
-
-For detailed information on advanced commands, custom configuration, spatial audio, and subtitles, see the **[Wiki & Documentation Guide (WIKI.md)](WIKI.md)**:
-
-- **[Screen size & FPS configuration](WIKI.md#options-configuration-video-option)**
-- **[Mono, Stereo & Surround audio modes](WIKI.md#audio-modes--spatialization)**
-- **[Subtitle track rendering](WIKI.md#subtitle-tracking-video-subs)**
-- **[Playlist & Queue management](WIKI.md#advanced-commands-reference)**
-- **[A/V Sync and delay adjustment](WIKI.md#options-configuration-video-option)**
-- **[Building & Compiling from source](WIKI.md#building--compiling-from-source)**
+Licensed under the GPL v3.
