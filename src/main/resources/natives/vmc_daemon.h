@@ -689,6 +689,9 @@ static void dm_tick_frame(void) {
             }
             g_sess.dropped_frames++;
             skipped_viewers++;
+            // Une seule frame sautee (50 ms) suffit a laisser la socket respirer ;
+            // si elle est encore pleine a la frame suivante, Java renverra EVT_WRITABLE(0).
+            g_players[s].writable = 1;
             continue;
         }
 

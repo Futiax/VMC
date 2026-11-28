@@ -400,7 +400,7 @@ function parseCsvText(filename, text) {
   if (dataLines.length < 2) return null;
 
   const headers = dataLines[0].split(",").map(h => h.trim());
-  const rows = [];
+  const allRows = [];
   for (let i = 1; i < dataLines.length; i++) {
     const cols = dataLines[i].split(",");
     if (cols.length < 10) continue;
@@ -409,9 +409,14 @@ function parseCsvText(filename, text) {
       const raw = cols[c] !== undefined ? cols[c].trim() : "";
       obj[headers[c]] = raw === "" ? null : Number(raw);
     }
-    rows.push(obj);
+    allRows.push(obj);
   }
-  if (!rows.length) return null;
+  if (!allRows.length) return null;
+
+  // Ignore automatiquement la 1re seconde du debug (warm-up d'ouverture ffmpeg / spawn ecran)
+  const t0 = allRows[0].t_ms || 0;
+  const filtered = allRows.filter(r => ((r.t_ms || 0) - t0) >= 1000 && (r.pts_ms === null || r.pts_ms >= 1000));
+  const rows = filtered.length > 0 ? filtered : allRows;
 
   // Inférence automatique pour les CSV générés avant l'ajout de l'en-tête "# name=..."
   const budget = rows[0].budget_us || 50000;
