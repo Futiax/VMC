@@ -1,0 +1,8 @@
+target/
+server/
+native/build/
+src/main/resources/pack.zip
+src/main/resources/pack.id
+*.lut
+*.lut.tmp.*
+__pycache__/

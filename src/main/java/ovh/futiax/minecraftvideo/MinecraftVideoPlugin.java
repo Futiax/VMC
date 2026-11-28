@@ -4,35 +4,52 @@ import com.github.retrooper.packetevents.PacketEvents;
 import com.github.retrooper.packetevents.event.PacketListenerCommon;
 import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import de.maxhenkel.voicechat.api.BukkitVoicechatService;
+import org.bukkit.Server;
 import org.bukkit.command.PluginCommand;
-import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.configuration.file.FileConfiguration;
+import ovh.futiax.mcdata.McData;
 
-// Classe principale du plugin. Joue des videos sur des ecrans map virtuels en jeu.
+// Module VMC heberge par MCDATA (plus un JavaPlugin : un seul plugin.yml par jar). Les methodes
+// getConfig/getLogger/getServer/... delegent au plugin hote, pour que le reste du package n'ait pas
+// a changer ; host() sert la ou Bukkit veut un vrai Plugin (scheduler, listeners).
+//
+// Joue des videos sur des ecrans map virtuels en jeu.
 // Tout est virtuel : fake entity ids, fake map ids, paquets uniquement. Rien n'est ecrit
 // dans le monde ni sur le disque (sauf le cache de MediaCache).
 //
 // packetevents est un plugin installe a part (depend dure dans plugin.yml) donc il gere son
 // propre cycle de vie : on n'appelle JAMAIS setAPI/load/init/terminate, seulement getAPI().
-public final class MinecraftVideoPlugin extends JavaPlugin {
+public final class MinecraftVideoPlugin {
+
+    private final McData host;
+
+    public MinecraftVideoPlugin(McData host) {
+        this.host = host;
+    }
+
+    public McData host() { return host; }
+    public FileConfiguration getConfig() { return host.getConfig(); }
+    public void saveConfig() { host.saveConfig(); }
+    public java.util.logging.Logger getLogger() { return host.getLogger(); }
+    public Server getServer() { return host.getServer(); }
+    public java.io.File getDataFolder() { return host.getDataFolder(); }
+    public java.io.InputStream getResource(String name) { return host.getResource(name); }
+    public boolean isEnabled() { return host.isEnabled(); }
+    private PluginCommand getCommand(String name) { return host.getCommand(name); }
 
     private volatile PlaybackSession activeSession;     // une seule session a la fois
     private final PlaylistManager playlist = new PlaylistManager(this);     // FIFO + auto-advance
     private MediaCache mediaCache;                      // null tant que onEnable n'a pas lu la config
     private PostEffects postEffects;
     private VoicechatHook voicechatHook;                // null si SVC pas installe
-    private final NativeInstaller nativeInstaller = new NativeInstaller(this);
     private PacketListenerCommon controlBarListener;    // garde pour l'unregister au disable
     private YtDlpResolver ytDlpResolver;                // partage avec /stream
     private LiveStream liveStream;                      // non-null pendant un /stream
     private ToolInstaller tools;                        // ffmpeg/ffprobe + yt-dlp
-    private ResourcePackService resourcePack;           // pack VMC pousse aux joueurs au join
     private McmmDaemon daemon;                          // pont vers mcmm --daemon
     private volatile boolean daemonMode;                // true = tout passe par le demon C
 
-    @Override
     public void onEnable() {
-        saveDefaultConfig();
-        nativeInstaller.install();
         postEffects = new PostEffects(this, getConfig().getString("post-effect", ""));
         purgePhotoClips();  // clips temporaires laisses par un arret brutal
 
@@ -44,8 +61,6 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 getConfig().getString("ffmpeg-path", "ffmpeg"),
                 getConfig().getBoolean("ffmpeg-autodownload", true));
         tools.start();
-        resourcePack = new ResourcePackService(this);
-        resourcePack.enable();
         ytDlpResolver = new YtDlpResolver(tools, getLogger());
         mediaCache = new MediaCache(getLogger(), getDataFolder().toPath(),
                 getConfig().getBoolean("cache-remote-sources", true),
@@ -88,7 +103,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             getLogger().severe("Command 'vmc' is missing from plugin.yml!");
         }
 
-        getServer().getPluginManager().registerEvents(new JoinListener(this), this);
+        getServer().getPluginManager().registerEvents(new JoinListener(this), host);
 
         // Les clics sur la barre arrivent en paquets INTERACT_ENTITY vises sur nos fake ids.
         // packetevents s'initialise tout seul (depend dure, charge avant nous), on pose juste
@@ -98,7 +113,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
 
         // Les joueurs bougent : on reevalue chaque seconde qui est a portee de l'ecran. Le
         // scheduler Bukkit annule la tache a onDisable.
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        getServer().getScheduler().runTaskTimer(host, () -> {
             PlaybackSession session = getActiveSession();
             if (session != null) {
                 session.refreshViewers(getServer().getOnlinePlayers());
@@ -158,8 +173,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             getLogger().warning("Configured mcmm-path '" + configured
                     + "' does not exist; using the bundled mcmm instead.");
         }
-        return nativeInstaller.getMcmmPath() != null
-                ? nativeInstaller.getMcmmPath().toString() : null;
+        return host.getMcmmPath();
     }
 
     // idem pour la palette : valeur configuree si elle existe, sinon celle du jar
@@ -172,8 +186,7 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
             getLogger().warning("Configured palette-path '" + configured
                     + "' does not exist; using the bundled palette instead.");
         }
-        return nativeInstaller.getPalettePath() != null
-                ? nativeInstaller.getPalettePath().toString() : null;
+        return host.getPalettePath();
     }
 
     // Les clips de /photo vivent dans <dataFolder>/photo et sont supprimes a l'arret de la
@@ -249,10 +262,6 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         return tools;
     }
 
-    public ResourcePackService getResourcePack() {
-        return resourcePack;
-    }
-
     public McmmDaemon getDaemon() {
         return daemon;
     }
@@ -296,7 +305,6 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
                 getConfig().getDouble("surround-rear-distance", 10.0));
     }
 
-    @Override
     public void onDisable() {
         // Unregister de packetevents en PREMIER : il nous survit, et un listener perime
         // garderait cette instance vivante sur un /reload tout en continuant a traiter les clics.
@@ -306,9 +314,6 @@ public final class MinecraftVideoPlugin extends JavaPlugin {
         }
         if (daemon != null) {
             daemon.stop();
-        }
-        if (resourcePack != null) {
-            resourcePack.disable();     // libere le port, sinon un /reload ne peut plus le rouvrir
         }
         stopLiveStream(null);
         playlist.clear(); // rien ne doit redemarrer tout seul a l'arret

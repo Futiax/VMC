@@ -1,0 +1,90 @@
+{
+  "targets": {
+    "state": {
+      "width": 64,
+      "height": 64
+    },
+    "doom": {
+      "width": 640,
+      "height": 360
+    }
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/doom_decode",
+      "inputs": [
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        }
+      ],
+      "output": "state"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/doom_view",
+      "inputs": [
+        {
+          "sampler_name": "Src",
+          "target": "minecraft:main",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "State",
+          "target": "state",
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Level",
+          "location": "minecraft:doom_level",
+          "width": 1024,
+          "height": 32,
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Atlas",
+          "location": "minecraft:doom_atlas",
+          "width": 4096,
+          "height": 1535,
+          "bilinear": false
+        },
+        {
+          "sampler_name": "Colormap",
+          "location": "minecraft:doom_colormap",
+          "width": 256,
+          "height": 448,
+          "bilinear": false
+        }
+      ],
+      "output": "doom"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "minecraft:post/blit",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "doom",
+          "bilinear": false
+        }
+      ],
+      "uniforms": {
+        "BlitConfig": [
+          {
+            "name": "ColorModulate",
+            "type": "vec4",
+            "value": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        ]
+      },
+      "output": "minecraft:main"
+    }
+  ]
+}

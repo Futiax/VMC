@@ -132,7 +132,7 @@ public final class McmmDaemon {
 
         // Envoie la position des joueurs toutes les 5 ticks (4x/s)
         stateTask = plugin.getServer().getScheduler()
-                .runTaskTimer(plugin, this::sendStatesTick, 5L, 5L);
+                .runTaskTimer(plugin.host(), this::sendStatesTick, 5L, 5L);
 
         plugin.getLogger().info("[C-Daemon] Processus mcmm --daemon demarre (PID " + process.pid() + ").");
         return true;
@@ -242,7 +242,7 @@ public final class McmmDaemon {
                 final float fYaw = yaw;
                 final String[] copyArgs = args.clone();
                 plugin.getMediaCache().reference(rawSource);
-                plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                plugin.getServer().getScheduler().runTaskAsynchronously(plugin.host(), () -> {
                     try {
                         String localPath = plugin.getMediaCache().acquire(rawSource, () -> !isRunning());
                         copyArgs[1] = "\"" + localPath + "\"";

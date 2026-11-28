@@ -168,7 +168,7 @@ public final class ControlBarListener implements PacketListener {
             return;
         }
         try {
-            plugin.getServer().getScheduler().runTask(plugin, task);
+            plugin.getServer().getScheduler().runTask(plugin.host(), task);
         } catch (IllegalStateException | IllegalPluginAccessException e) {
             // desactive entre le check et le schedule, le clic ne sert plus a rien
         }

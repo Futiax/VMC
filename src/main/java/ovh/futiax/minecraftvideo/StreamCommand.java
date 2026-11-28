@@ -113,7 +113,7 @@ public final class StreamCommand implements CommandExecutor, TabCompleter {
         player.sendMessage("[MinecraftVideo] Resolution du direct... (tranches de "
                 + live.getSegmentSeconds() + " s, donc autant de retard sur le direct)");
         // yt-dlp bloque : on resout a cote, on revient sur le main pour demarrer ffmpeg.
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin.host(), () -> {
             String mediaUrl;
             try {
                 mediaUrl = plugin.getYtDlpResolver().handles(source)
@@ -124,12 +124,12 @@ public final class StreamCommand implements CommandExecutor, TabCompleter {
                 // d'oracle sur ce que le serveur arrive a joindre.
                 plugin.getLogger().warning("Resolution du direct '" + source + "' echouee: "
                         + e.getMessage());
-                plugin.getServer().getScheduler().runTask(plugin, () ->
+                plugin.getServer().getScheduler().runTask(plugin.host(), () ->
                         player.sendMessage("[MinecraftVideo] Impossible de lire ce direct"
                                 + " (voir le log serveur)."));
                 return;
             }
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            plugin.getServer().getScheduler().runTask(plugin.host(), () -> {
                 try {
                     plugin.startLiveStream(live, mediaUrl);
                     player.sendMessage("[MinecraftVideo] Direct lance: "

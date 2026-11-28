@@ -1158,7 +1158,7 @@ public final class PlaybackSession {
             return; // impossible de planifier une tache pendant le disable
         }
         try {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            plugin.getServer().getScheduler().runTask(plugin.host(), () -> {
                 Player player = plugin.getServer().getPlayer(initiatorId);
                 if (player != null) {
                     player.sendMessage("[MinecraftVideo] " + message);

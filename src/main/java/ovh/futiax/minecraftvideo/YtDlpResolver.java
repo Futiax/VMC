@@ -51,6 +51,16 @@ public final class YtDlpResolver {
     private static final Pattern FRAGMENT = Pattern.compile("\\.f\\d+\\.[^.]+$");    // fichier mono-format
                                                                                     // avant fusion, ex .f299.mp4
 
+    // yt-dlp a reconnu la page mais n'en a tire aucun media (sortie 0, aucun fichier) : rien a
+    // voir avec un echec reseau, l'appelant peut tenter une autre voie.
+    public static final class NoMediaException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        public NoMediaException(String message) {
+            super(message);
+        }
+    }
+
     private final ToolInstaller installer;
     private final Logger logger;
 
@@ -174,7 +184,9 @@ public final class YtDlpResolver {
         }
         Path produced = locate(target);
         if (produced == null) {
-            throw new IOException("yt-dlp reported success but wrote no file: "
+            // Typiquement un album imgur d'IMAGES : l'extracteur ne garde que les videos, rend
+            // une playlist vide et sort en 0. MediaCache rattrape ce cas via les balises og:.
+            throw new NoMediaException("yt-dlp reported success but wrote no file: "
                     + snapshot(tail));
         }
         return produced;

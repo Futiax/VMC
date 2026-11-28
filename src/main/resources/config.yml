@@ -1,13 +1,45 @@
-# Path to the native mcmm converter executable.
-# Leave EMPTY to use the binary bundled with the plugin (extracted into this
-# folder on first start). Set a path to override with your own build.
+# MCDATA configuration.
+
+# Push the MCDATA resource pack (core shaders + post effects) to players when they join.
+# Minecraft does not carry packs over its own protocol: the server sends a URL and a SHA-1,
+# and the client fetches the zip over HTTP.
+resource-pack: true
+
+# By default players download the pack from its GitHub release (pack-<id>, published by the CI,
+# <id> = the pack's content): nothing to host, nothing to open. The URL is derived from the pack
+# this jar was built with, so an upgrade follows along on its own -- that is why it is not
+# written here (your config.yml is never overwritten).
+#
+# resource-pack-selfhost: true serves the pack from a tiny HTTP server inside the plugin
+# instead, for players without internet access. resource-pack-port must then be reachable BY
+# PLAYERS, and it is NOT the game port: a closed port ends in "Connection refused".
+resource-pack-selfhost: false
+resource-pack-port: 8098
+
+# Explicit URL of a pack.zip hosted elsewhere. Empty = the GitHub release above.
+resource-pack-url: ""
+
+# Kick players who decline the pack. Leave off until players actually receive it.
+resource-pack-required: false
+
+# Message shown in the client's pack prompt. Empty = vanilla wording.
+resource-pack-prompt: ""
+
+# Tick rate (per second) at which the beacon channel sends data to players.
+# 20 = every server tick.
+channel-rate: 20
+
+# Path to the mcmm native binary (auto-extracted from the jar if empty).
 mcmm-path: ""
 
-# Path to the palette JSON passed to mcmm via --palette. Leave EMPTY to use the
-# bundled VANILLA map-color palette (works on any client, no mod needed). Only
-# override this on a modded (Fabric/NeoForge) server that uses a custom map
-# palette such as Improved Map Colors.
+# Path to the vanilla map palette JSON (auto-extracted from the jar if empty).
 palette-path: ""
+
+# Default FPS for video playback.
+video-fps: 20
+
+# ====================== VMC (/video /vmc /photo /stream) ======================
+# mcmm-path, palette-path et le resource pack sont ceux de MCDATA ci-dessus.
 
 # Client post-effect pushed to every viewer while a screen is displayed
 # (/posteffect add|remove, Minecraft 26.3+ servers only; ignored with a warning
@@ -95,7 +127,7 @@ subtitle-height: 0.45
 subtitle-depth: 0.05
 
 # --- Remote source cache ---
-# Download an http(s) source to a local file (plugins/MinecraftVideo/cache)
+# Download an http(s) source to a local file (plugins/MCDATA/cache)
 # ONCE, so mcmm, the audio ffmpeg, ffprobe and the subtitle ffmpeg all read the
 # local file instead of each opening its own connection to the origin. This
 # avoids the concurrent-connection load that makes hosts like archive.org answer
@@ -123,7 +155,7 @@ cache-max-size-mb: 2048
 # yt-dlp is NOT bundled (it is ~30 MB per platform and its extractors break
 # often). Instead the plugin finds it in this order and, only if needed,
 # downloads it ONCE from yt-dlp's official GitHub releases into
-# plugins/MinecraftVideo/bin (then self-updates it in the background):
+# plugins/MCDATA/bin (then self-updates it in the background):
 #   1. yt-dlp-path below, if set;
 #   2. a yt-dlp already on the server's PATH (preferred: the admin maintains it);
 #   3. a copy this plugin downloads on the first YouTube-style play.
@@ -199,7 +231,7 @@ ffmpeg-path: "ffmpeg"
 #   2. an ffmpeg+ffprobe pair already on the server's PATH (preferred: the admin
 #      maintains it);
 #   3. a copy this plugin downloads ONCE from the official FFmpeg-Builds GitHub
-#      releases into plugins/MinecraftVideo/bin.
+#      releases into plugins/MCDATA/bin.
 #
 # The download is ~130 MB (plus roughly as much again, briefly, while unpacking)
 # and runs in the BACKGROUND at startup: the server boots immediately, and a
@@ -211,41 +243,11 @@ ffmpeg-path: "ffmpeg"
 # Set to false to keep the old behaviour: ffmpeg must be installed by the admin.
 ffmpeg-autodownload: true
 
-# --- Resource pack (the VMC post effects, needed by render-mode: data) ---
-# The pack ships INSIDE this jar. Minecraft never transfers a pack over the game
-# protocol: the server sends a URL and a SHA-1, and the client fetches the zip
-# over HTTP. By default that URL is the pack's own GitHub release -- nothing to
-# host, nothing to configure.
-resource-pack: true
-
-# Explicit URL of the pack zip. Leave EMPTY to use the GitHub release of the pack
-# this jar was built with, which is what you want in almost every case: nothing to
-# open, nothing to host. The URL is derived from the pack's content, so an upgrade
-# follows along on its own -- that is why it is not written out here (your
-# config.yml is never overwritten, so a hardcoded URL would keep pointing at the
-# pack you first installed).
-resource-pack-url: ""
-
-# Serve the pack from a tiny HTTP server inside the plugin instead of fetching
-# it from a URL. For servers whose players have no outbound internet access.
-#
-# It needs resource-pack-port below to be reachable BY PLAYERS, and that port is
-# NOT the game port -- a closed port ends in "Connection refused" on the client
-# and nobody gets the pack. Leave this false unless you know you need it.
-resource-pack-selfhost: false
-
-# Port of that built-in HTTP server. Only used when resource-pack-selfhost is on.
-resource-pack-port: 8099
-
-# Make the pack MANDATORY (a player who declines is disconnected).
-# Left false on purpose: vanilla clients accept server packs on their own, so
-# everyone gets it anyway, WITHOUT the failure mode where a wrong URL or a closed
-# port locks every player out of the server. Turn it on once you have confirmed
-# players actually receive the pack.
-resource-pack-required: false
-
-# Message shown in the client's pack prompt. Empty = vanilla wording.
-resource-pack-prompt: ""
-
 # Audio falloff distance in blocks (how far the screen's sound carries).
 audio-distance: 48
+
+# ============================== DOOMMC (/doom) ==============================
+
+# Freedoom WAD for /doom (Debian/Ubuntu package "freedoom"). It must be the same WAD the resource
+# pack was generated from (tools/doom/gen_level.py): the pack holds its level and sprites.
+wad: /usr/share/games/doom/freedoom1.wad

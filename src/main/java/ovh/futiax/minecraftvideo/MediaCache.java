@@ -172,13 +172,30 @@ public final class MediaCache {
             Path produced;
             try {
                 produced = resolver.download(source, tmp, maxBytes, abort);
+            } catch (YtDlpResolver.NoMediaException e) {
+                deleteQuietly(tmp);
+                // Page reconnue mais sans media pour yt-dlp (album imgur d'images...) : on prend
+                // le media que la page annonce elle-meme dans ses balises og:/twitter:.
+                String media = pageMediaUrl(source);
+                if (media == null) {
+                    throw new IOException("no video or image found on this page ("
+                            + e.getMessage() + ")");
+                }
+                logger.info("yt-dlp found nothing on " + source + ", using its preview media "
+                        + media);
+                return publish(fetchToFile(media, tmp, abort), target, source);
             } catch (IOException e) {
                 deleteQuietly(tmp); // yt-dlp a pu laisser un fichier partiel
                 throw e;
             }
             return publish(produced, target, source);
         }
-        HttpResponse<InputStream> response = fetch(source);
+        return publish(fetchToFile(source, tmp, abort), target, source);
+    }
+
+    // GET direct (garde SSRF + cap de taille) de url vers tmp. tmp est supprime en cas d'echec.
+    private Path fetchToFile(String url, Path tmp, BooleanSupplier abort) throws IOException {
+        HttpResponse<InputStream> response = fetch(url);
         // refus immediat si la taille annoncee depasse le cap
         long advertised = response.headers().firstValueAsLong("content-length").orElse(-1L);
         if (maxBytes > 0 && advertised > maxBytes) {
@@ -207,7 +224,63 @@ public final class MediaCache {
             deleteQuietly(tmp);
             throw e;
         }
-        return publish(tmp, target, source);
+        return tmp;
+    }
+
+    private static final int MAX_PAGE_BYTES = 2 * 1024 * 1024; // on ne lit que le debut du HTML
+    private static final java.util.regex.Pattern META_TAG =
+            java.util.regex.Pattern.compile("<meta\\b[^>]*>", java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern META_ATTR = java.util.regex.Pattern.compile(
+            "\\b(property|name|content)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+    // ordre de preference : une video avant une image, la version https avant l'autre
+    private static final java.util.List<String> MEDIA_KEYS = java.util.List.of(
+            "og:video:secure_url", "og:video:url", "og:video",
+            "og:image:secure_url", "og:image:url", "og:image",
+            "twitter:player:stream", "twitter:image");
+
+    // Lit la page (meme garde SSRF que tout le reste) et rend l'URL absolue du media annonce
+    // dans ses balises <meta> og:/twitter:, ou null s'il n'y en a pas.
+    private String pageMediaUrl(String page) throws IOException {
+        String html;
+        try (InputStream in = fetch(page).body()) {
+            html = new String(in.readNBytes(MAX_PAGE_BYTES), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        Map<String, String> found = new HashMap<>();
+        java.util.regex.Matcher tag = META_TAG.matcher(html);
+        while (tag.find()) {
+            String key = null;
+            String content = null;
+            java.util.regex.Matcher attr = META_ATTR.matcher(tag.group());
+            while (attr.find()) {
+                String value = attr.group(3) != null ? attr.group(3) : attr.group(4);
+                if (attr.group(1).equalsIgnoreCase("content")) {
+                    content = value;
+                } else {
+                    key = value.toLowerCase(Locale.ROOT);
+                }
+            }
+            if (key != null && content != null && !content.isBlank()) {
+                found.putIfAbsent(key, content.trim());
+            }
+        }
+        for (String k : MEDIA_KEYS) {
+            String v = found.get(k);
+            if (v == null) {
+                continue;
+            }
+            v = v.replace("&amp;", "&");
+            try {
+                String abs = URI.create(page).resolve(v).toString();
+                String l = abs.toLowerCase(Locale.ROOT);
+                if (l.startsWith("http://") || l.startsWith("https://")) {
+                    return abs;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // valeur mal formee : on passe a la suivante
+            }
+        }
+        return null;
     }
 
     private Path publish(Path downloaded, Path target, String source) throws IOException {

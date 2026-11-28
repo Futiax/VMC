@@ -95,7 +95,7 @@ public final class PlaylistManager {
             return; // isEmpty est un pre-check racy, advance() reverifie sur le main
         }
         try {
-            plugin.getServer().getScheduler().runTask(plugin, this::advance);
+            plugin.getServer().getScheduler().runTask(plugin.host(), this::advance);
         } catch (IllegalStateException | IllegalPluginAccessException e) {
             // plugin en train de se desactiver entre le check et le schedule, rien a lancer
         }

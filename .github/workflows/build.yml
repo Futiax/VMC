@@ -5,8 +5,8 @@ name: Build & Release
 # with the jar attached. Commits that don't change the version just build and
 # upload a throwaway artifact (Actions tab), so nothing is released twice.
 #
-# No native toolchain / ffmpeg needed: the mcmm binary is committed under
-# src/main/resources/natives/, so `mvn package` alone produces a working jar.
+# No native toolchain / ffmpeg needed: the mcmm and Doom engine binaries are committed under
+# src/main/resources/, so `mvn package` alone produces a working jar (MCDATA + VMC + DOOMMC).
 
 on:
   push:
@@ -30,18 +30,17 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Doit tourner AVANT mvn : pack.zip et pack.id ne sont pas commites (artefacts derives
-      # de pack/), donc sans cette etape le jar de release partirait sans
-      # resource pack. Meme script que ./build.sh, pour que les deux ne divergent pas.
+      # Doit tourner AVANT mvn : pack.zip et pack.id ne sont pas commites (artefacts derives de pack/), donc sans
+      # cette etape le jar partirait sans resource pack. Meme script que ./build.sh.
       - name: Build the resource pack
         run: ./make-pack.sh
 
       - name: Build with Maven
         run: mvn -B clean package
 
-      # Le pack a ses propres releases, une par contenu (pack.id, ecrit par make-pack.sh) :
-      # ResourcePackService pointe sur .../releases/download/pack-<id>/pack.zip. Publie a chaque
-      # push si besoin, meme sans bump de version, et jamais marque "Latest" : c'est le plugin.
+      # Le pack complet (MCDATA + VMC + DOOMMC) a ses propres releases, une par contenu (pack.id,
+      # ecrit par make-pack.sh) : .../releases/download/pack-<id>/pack.zip. Publie a chaque push si
+      # besoin, meme sans bump de version, et jamais marque "Latest" : c'est le plugin.
       - name: Publish the resource pack
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,7 +53,7 @@ jobs:
             gh release create "pack-$id" src/main/resources/pack.zip \
               --target "$GITHUB_SHA" \
               --title "Resource pack $id" \
-              --notes "VMC resource pack, downloaded by players from the plugin." \
+              --notes "MCDATA resource pack (MCDATA + VMC + DOOMMC, Minecraft 26.3). Pushed to players by the plugin." \
               --latest=false
           fi
 
@@ -70,8 +69,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: minecraftvideo-plugin-${{ steps.version.outputs.version }}
-          path: target/minecraftvideo-plugin-*.jar
+          name: mcdata-${{ steps.version.outputs.version }}
+          path: target/mcdata-*.jar
           if-no-files-found: error
 
       # Publish a Release only when this version hasn't been released yet, so a
@@ -94,6 +93,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
-            "target/minecraftvideo-plugin-${{ steps.version.outputs.version }}.jar" \
+            "target/mcdata-${{ steps.version.outputs.version }}.jar" \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
